@@ -1,7 +1,7 @@
 # Microsoft Rewards Helper（必应自动签到 · Shizuku 版）
 
 包名 `com.baisha.MicrosoftRewardsHelper`。通过 **Shizuku** 拿到 adb(shell) 权限，再配合本应用自带的无障碍服务，
-在手机上自动完成 Microsoft Rewards（必应）的**每日签到、每日活动、自动搜索**三类积分任务，支持后台无人值守。 
+在手机上自动完成 Microsoft Rewards（必应）的**每日签到、每日活动、自动搜索**三类积分任务，支持后台无人值守。
 
 > 本项目由 AI 辅助编写。
 
