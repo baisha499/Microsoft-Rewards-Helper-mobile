@@ -1,0 +1,13 @@
+<resources>
+    <color name="bg_main">#FF2B2B2B</color>
+    <color name="fg_main">#FFFFFFFF</color>
+    <color name="fg_secondary">#B3FFFFFF</color>
+    <color name="surface">#FF3A3A3A</color>
+    <color name="surface_variant">#FF454545</color>
+    <color name="primary">#FFFFFFFF</color>
+    <color name="on_primary">#FF000000</color>
+    <color name="outline">#66FFFFFF</color>
+    <color name="log_bg">#FF1B1B1B</color>
+    <color name="log_text">#FFE6E6E6</color>
+    <color name="ic_launcher_background">#FF2B2B2B</color>
+</resources>

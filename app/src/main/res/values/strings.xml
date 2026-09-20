@@ -1,0 +1,30 @@
+<resources>
+    <string name="app_name">必应自动签到</string>
+
+    <string name="menu_settings">设置</string>
+
+    <string name="grp_auth">Shizuku 授权</string>
+    <string name="grp_action">操作</string>
+    <string name="grp_log">运行日志</string>
+
+    <string name="hint_package">目标包名（一行一个）</string>
+    <string name="hint_home_xy">第1步：左上角头像坐标 x,y 或 x%,y%</string>
+    <string name="hint_step_points">第2步：Microsoft Rewards（关键词，用 | 分隔）</string>
+    <string name="hint_points_xy">第2步备选坐标 x,y 或 x%,y%（可选）</string>
+    <string name="hint_step_checkin">第3步：签入页判定词（关键词，用 | 分隔）</string>
+    <string name="hint_checkin_xy">第3步备选坐标（一般不填）</string>
+    <string name="hint_threshold">Day 卡片“已变黄”判定阈值（越大越严格）</string>
+    <string name="hint_poll">轮询间隔（秒）</string>
+
+    <string name="sec_target">目标应用</string>
+    <string name="sec_permissions">权限</string>
+    <string name="sec_checkin_config">签到配置</string>
+    <string name="sec_checkin_config_sub">目标包名、头像 / Rewards / 签入三步关键词、备选坐标、判定阈值</string>
+    <string name="sec_step1">第 1 步 · 左上角头像</string>
+    <string name="sec_step2">第 2 步 · Microsoft Rewards</string>
+    <string name="sec_step3">第 3 步 · 签入与 Day 卡片</string>
+    <string name="sec_other">其他</string>
+
+    <string name="monitor_channel_name">必应自动签到监控</string>
+    <string name="a11y_description">用于在必应 App 内读取界面文本与坐标并完成自动签到，不会收集或上传任何数据。</string>
+</resources>

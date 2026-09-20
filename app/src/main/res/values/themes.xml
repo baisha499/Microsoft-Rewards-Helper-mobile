@@ -1,0 +1,22 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.BingCheckIn" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowBackground">@color/bg_main</item>
+        <item name="android:statusBarColor">@color/bg_main</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:navigationBarColor">@color/bg_main</item>
+        <item name="android:textColorPrimary">@color/fg_main</item>
+        <item name="android:textColorSecondary">@color/fg_secondary</item>
+
+        <item name="colorPrimary">@color/primary</item>
+        <item name="colorOnPrimary">@color/on_primary</item>
+        <item name="colorSurface">@color/surface</item>
+        <item name="colorOnSurface">@color/fg_main</item>
+        <item name="colorSurfaceVariant">@color/surface_variant</item>
+        <item name="colorOnSurfaceVariant">@color/fg_secondary</item>
+        <item name="colorOutline">@color/outline</item>
+        <item name="colorControlNormal">@color/fg_main</item>
+        <item name="colorControlHighlight">@color/fg_secondary</item>
+        <item name="elevationOverlayEnabled">false</item>
+        <item name="actionMenuTextColor">@color/fg_main</item>
+    </style>
+</resources>
