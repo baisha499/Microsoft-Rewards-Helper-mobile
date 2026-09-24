@@ -10,9 +10,9 @@ android {
         applicationId = "com.baisha.MicrosoftRewardsHelper"
         minSdk = 24
         targetSdk = 36
-        // 版本号后面括号中的数字：这是 3.0.1 下的第几次修改
+        // 版本号后面括号中的数字：这是 4.0.1 下的第几次修改
         // 不写 versionCode（AGP 会省掉它，系统按 0 处理）；覆盖安装不受影响
-        versionName = "3.0.1(9)"
+        versionName = "4.0.1"
         // 只打 arm64：ML Kit 的 so 很大，多打一个架构体积就翻一倍，不为 32 位机器保留
         ndk {
             abiFilters += listOf("arm64-v8a")

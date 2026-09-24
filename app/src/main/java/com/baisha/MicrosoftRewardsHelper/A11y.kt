@@ -1,5 +1,6 @@
 package com.baisha.MicrosoftRewardsHelper
 
+import android.content.ComponentName
 import android.content.Context
 import android.provider.Settings
 import android.text.TextUtils
@@ -27,7 +28,16 @@ object A11y {
             Settings.Secure.ACCESSIBILITY_ENABLED,
             0
         ) == 1
-        return on && list.split(':').any { it.equals(SERVICE, true) }
+        if (!on) return false
+        // 系统存的组件名是完整形式 pkg/pkg.cls，而 SERVICE 常量是缩写 pkg/.cls，
+        // 直接 equals 会恒不匹配导致"服务已连接却显示未开启"。用 ComponentName 规范比较。
+        val target = ComponentName.unflattenFromString(SERVICE) ?: return false
+        return list.split(':').any { entry ->
+            runCatching {
+                val c = ComponentName.unflattenFromString(entry)
+                c != null && c.packageName == target.packageName && c.className == target.className
+            }.getOrDefault(false)
+        }
     }
 
     /**
@@ -41,6 +51,11 @@ object A11y {
         val detail = StringBuilder()
         val grant = Shell.exec(context, "pm grant $PKG android.permission.WRITE_SECURE_SETTINGS", 8_000)
         detail.append("pm grant → out=${grant.out.trim()} err=${grant.err.trim()}\n")
+        // 授权失败继续写也没用，直接告诉用户原因，别再往下走
+        if (grant.err.trim().isNotEmpty() && grant.err.trim().contains("not", ignoreCase = true)) {
+            val already = Shell.exec(context, "pm list permissions -g $PKG android.permission.WRITE_SECURE_SETTINGS 2>/dev/null", 8_000)
+            detail.append("已授权检查 → out=${already.out.trim()}\n")
+        }
 
         val before = readEnabledServices(context)
         detail.append("写入前：$before\n")

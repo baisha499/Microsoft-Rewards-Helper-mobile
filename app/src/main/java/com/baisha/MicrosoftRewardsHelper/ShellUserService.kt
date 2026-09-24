@@ -23,9 +23,12 @@ class ShellUserService : Binder(), IInterface {
 
         /**
          * Shizuku 约定的 destroy 事务码（AIDL 里是 16777114）。
-         * 不实现它，unbind(remove=true) 就杀不掉用户服务进程。
+         * 不实现它，unbind(remove=true) 就杀不掉用户服务进程；
+         * 残留的僵尸进程会一直占着同 tag/version 的"死记录"，Shizuku 就不会再 fork 新进程，
+         * 于是 onServiceConnected 永不回调，表现为一直"用户服务未连接"。
+         * 之前这里的值写成 16777115（和注释对不上），正是即使换 key 重建也连不上的根因之一。
          */
-        private const val DESTROY_TRANSACTION = 16777115
+        private const val DESTROY_TRANSACTION = 16777114
     }
 
     init {
@@ -79,9 +82,10 @@ class ShellUserService : Binder(), IInterface {
 
             DESTROY_TRANSACTION -> {
                 // Shizuku 要求用户服务自己实现 destroy，否则 unbind(remove=true) 杀不掉
-                // 这个进程；旧进程赖着不走，新的就一直拉不起来
-                data.enforceInterface(UserShellProtocol.DESCRIPTOR)
-                reply?.writeNoException()
+                // 这个进程；旧进程赖着不走，新的就一直拉不起来。
+                // 注意：这个事务不是走我们的 AIDL，data 不带 DESCRIPTOR token，
+                // 不能 enforceInterface，否则会先抛 SecurityException，进程退不掉。
+                runCatching { reply?.writeNoException() }
                 thread(name = "us-destroy") {
                     Thread.sleep(50)
                     kotlin.system.exitProcess(0)
@@ -114,36 +118,41 @@ class ShellUserService : Binder(), IInterface {
         } catch (_: Throwable) {
             return ""
         }
-        val out = StringBuilder()
+        // 每线程独立缓冲，避免 StringBuilder 并发写引发数据竞争；最后再拼接
+        val outBuf = StringBuilder()
+        val errBuf = StringBuilder()
+        val workers = mutableListOf<Thread>()
+        workers.add(thread(name = "us-out") {
+            try {
+                process.inputStream.bufferedReader().forEachLine { outBuf.append(it).append('\n') }
+            } catch (_: Throwable) {
+            }
+        })
+        workers.add(thread(name = "us-err") {
+            try {
+                process.errorStream.bufferedReader().forEachLine { errBuf.append(it).append('\n') }
+            } catch (_: Throwable) {
+            }
+        })
+
         val finished = CountDownLatch(1)
-        thread(name = "us-out") {
-            try {
-                process.inputStream.bufferedReader().forEachLine { out.append(it).append('\n') }
-            } catch (_: Throwable) {
-            }
-        }
-        thread(name = "us-err") {
-            try {
-                val sink = if (includeErr) out else StringBuilder()
-                process.errorStream.bufferedReader().forEachLine { sink.append(it).append('\n') }
-            } catch (_: Throwable) {
-            }
-        }
-        thread(name = "us-wait") {
+        workers.add(thread(name = "us-wait") {
             try {
                 process.waitFor()
             } catch (_: Throwable) {
             } finally {
                 finished.countDown()
             }
-        }
+        })
 
         finished.await(timeout, TimeUnit.MILLISECONDS)
         if (finished.count > 0) {
             runCatching { process.destroy() }
-            runCatching { Thread.sleep(120) }
         }
-        return out.toString()
+        // 等读线程收尾，避免超时后仍向缓冲写入导致结果被并发读到
+        workers.forEach { t -> runCatching { Thread.sleep(120); } }
+        workers.forEach { t -> runCatching { t.join(3_000) } }
+        return if (includeErr) outBuf.toString() + errBuf.toString() else outBuf.toString()
     }
 
     /**

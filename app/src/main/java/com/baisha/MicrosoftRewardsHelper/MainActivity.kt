@@ -332,13 +332,15 @@ class MainActivity : AppCompatActivity() {
             return
         }
         lifecycleScope.launch {
-            val ok = withContext(Dispatchers.IO) { A11y.enable(this@MainActivity) }
+            val (ok, reason) = withContext(Dispatchers.IO) { A11y.enable(this@MainActivity) }
             Toast.makeText(
                 this@MainActivity,
                 if (ok) "已写入无障碍设置，若仍未生效请到系统无障碍设置里打开本应用"
-                else "写入失败，可用下方按钮手动开启",
+                else "写入失败，原因见下方日志",
                 Toast.LENGTH_LONG
             ).show()
+            log(if (ok) "✓ 已写入无障碍设置" else "✗ 写入无障碍设置失败，底层信息：")
+            reason.lineSequence().forEach { if (it.isNotBlank()) log("· $it") }
             refreshShizukuStatus()
         }
     }
@@ -424,9 +426,18 @@ class MainActivity : AppCompatActivity() {
             }
             if (connected) {
                 // 先清掉可能残留的旧用户服务，再重新绑定
-                withContext(Dispatchers.IO) {
+                val svc = withContext(Dispatchers.IO) {
                     UserShell.kick(this@MainActivity)
                     UserShell.get(this@MainActivity)
+                }
+                if (svc == null) {
+                    val uid = runCatching { Shizuku.getUid() }.getOrDefault(-1)
+                    val ver = runCatching { Shizuku.getVersion() }.getOrDefault(-1)
+                    log("✗ 用户服务仍绑定失败（Shizuku API $ver，运行身份 uid=$uid）")
+                    UserShell.lastBindError?.let { log("· 底层原因：$it") }
+                    log("· 请用 adb logcat 抓 tag=ShizukuServiceStarter 的 \"unable to start service\" 行查看真正异常")
+                } else {
+                    log("✓ Shizuku 用户服务已连接")
                 }
                 refreshShizukuStatus()
                 return@launch

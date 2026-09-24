@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.ServiceConnection
 import android.os.IBinder
+import android.os.Looper
 import android.os.Parcel
 import rikka.shizuku.Shizuku
 import java.util.concurrent.CountDownLatch
@@ -16,9 +17,16 @@ object UserShell {
 
     private const val TAG = "bing_shell"
     private const val VERSION = 1
-    private const val WAIT_MS = 8_000L
+    // 服务端 starting 超时是 30s，冷启动 app_process 在慢手机上可能要 10~25s，
+    // 这里必须比 30s 略短，不能只等 8s
+    private const val WAIT_MS = 25_000L
     /** 绑定失败后的冷却时间，避免每条 shell 命令都卡满重试 */
     private const val BIND_COOLDOWN_MS = 30_000L
+
+    /** 最近一次绑定失败的底层原因（bindUserService 抛出的异常），供界面日志展示 */
+    @Volatile
+    var lastBindError: String? = null
+        private set
 
     private val lock = Any()
 
@@ -40,12 +48,41 @@ object UserShell {
     @Volatile
     private var tagSeq = 0
 
+    /**
+     * 是否需要用新的 tag/version 重新建一次用户服务。
+     * 触发场景：检测到已有用户服务进程被打死（ping 失败），或 Shizuku 主 binder 断过又恢复。
+     * 核心坑：Shizuku 会留着同 tag+version 的"死记录"；不换 key 直接重绑，
+     * 它不会真的 fork 新进程，onServiceConnected 永不回调 → 一直"绑定失败"。
+     */
+    @Volatile
+    private var needFreshService = false
+
     @Volatile
     private var signal: CountDownLatch? = null
 
     /** 是否已「释放」：释放期间不绑定、不执行任何 shell */
     @Volatile
     private var released = false
+
+    // —— 监听 Shizuku 主 binder 的生命周期，解决"自动化被挤掉/服务被杀后没重新拿到"的问题。
+    // 之前这里什么都不监听：Shizuku 一被杀重启，应用还攥着旧引用和 30s 冷却，
+    // 于是授权在、但永远绑不上用户服务。
+    init {
+        runCatching {
+            Shizuku.addBinderDeadListener {
+                // Shizuku 容器被杀：所有绑定失效
+                instance = null
+                nextBindAt = 0L
+                needFreshService = true
+            }
+            Shizuku.addBinderReceivedListener {
+                // Shizuku 回来了，但不会自动帮我们重建用户服务，必须自己换 key 重连
+                instance = null
+                nextBindAt = 0L
+                needFreshService = true
+            }
+        }
+    }
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -75,8 +112,9 @@ object UserShell {
         if (value) {
             release(context)
         } else {
-            // 恢复后立刻允许重新绑定，不用等冷却
+            // 恢复后立刻允许重新绑定，不用等冷却，但要用新 key 重连
             nextBindAt = 0L
+            needFreshService = true
         }
     }
 
@@ -87,7 +125,7 @@ object UserShell {
         if (!Shell.hasPermission()) return null
         // ServiceConnection 的回调在主线程投递，所以这里绝不能在主线程阻塞等待，
         // 否则 onServiceConnected 永远等不到，直接 ANR
-        val onMainThread = android.os.Looper.myLooper() == android.os.Looper.getMainLooper()
+        val onMainThread = Looper.myLooper() == Looper.getMainLooper()
 
         // 刚失败过就别再死等了，否则每次 exec 都要卡满重试时间
         if (instance == null && System.currentTimeMillis() < nextBindAt) return null
@@ -96,6 +134,13 @@ object UserShell {
         synchronized(lock) {
             result = alive()
             if (result == null) {
+                // 之前已有过实例、但现在死了（进程被挤掉 / Shizuku 重启过）：
+                // 必须换 tag+version，否则 Shizuku 复用那条死记录不建新进程
+                if (needFreshService) {
+                    needFreshService = false
+                    serviceVersion++
+                    tagSeq++
+                }
                 val args = buildArgs(context)
                 repeat(2) { attempt ->
                     // 第二次之前先清掉残留服务，很多"一直不回调"就是残留进程卡着
@@ -111,8 +156,15 @@ object UserShell {
         }
         if (result != null) {
             nextBindAt = 0L
+            lastBindError = null
         } else {
             nextBindAt = System.currentTimeMillis() + BIND_COOLDOWN_MS
+            if (lastBindError == null) {
+                // bindUserService 调用本身没抛异常，但 25s 内一直没收到 onServiceConnected：
+                // 说明 Shizuku 服务端 fork 出的 :shell 进程没起来 / 起来就崩了，
+                // 真正的堆栈在 logcat（tag: ShizukuServiceStarter，"unable to start service"）
+                lastBindError = "用户服务进程在 25 秒内未连接（进程未启动或启动即崩溃，详见 logcat: ShizukuServiceStarter）"
+            }
             // 下次换个版本号，让 Shizuku 重建服务而不是复用那个起不来的
             serviceVersion++
         }
@@ -139,6 +191,9 @@ object UserShell {
             ComponentName(context.packageName, ShellUserService::class.java.name)
         )
             .processNameSuffix(":shell")
+            // debug 包必须声明 debuggable，否则 app_process 无法从 debug APK 加载用户服务类，
+            // 子进程启动即崩、onServiceConnected 永不回调 → 一直提示"用户服务进程未连接"
+            .debuggable(true)
             .tag(if (tagSeq == 0) TAG else "${TAG}_$tagSeq")
             .version(serviceVersion)
             .daemon(false)
@@ -151,7 +206,9 @@ object UserShell {
             Shizuku.bindUserService(args, connection)
             if (wait) runCatching { latch.await(WAIT_MS, TimeUnit.MILLISECONDS) }
             true
-        } catch (_: Throwable) {
+        } catch (e: Throwable) {
+            // 之前这里把异常吞了，界面上只能看到笼统的"启动失败"，保留底层原因便于排查
+            lastBindError = "bindUserService 异常：${e.javaClass.simpleName}: ${e.message}"
             false
         } finally {
             signal = null
@@ -159,23 +216,20 @@ object UserShell {
     }
 
     fun release(context: Context) {
-        val args = Shizuku.UserServiceArgs(
-            ComponentName(context.packageName, ShellUserService::class.java.name)
-        )
-            .processNameSuffix(":shell")
-            .tag(TAG)
-            .version(VERSION)
-            .daemon(false)
-        runCatching { Shizuku.unbindUserService(args, connection, false) }
+        // 用当前活跃的 tag/version 解绑，否则 serviceVersion 递增或 tagSeq 复用后
+        // 开着旧 key 解绑不到实际在跑的服务
+        runCatching { Shizuku.unbindUserService(buildArgs(context), connection, false) }
         instance = null
+        nextBindAt = 0L
     }
 
     private fun alive(): Proxy? {
         val proxy = instance ?: return null
         val ok = runCatching { proxy.ping() }.getOrDefault(false)
         if (!ok) {
-            // 服务进程被杀 / binder 断了，下次 get() 会重新绑定
+            // 服务进程被杀 / binder 断了：标记需要换 key 重建（否则重绑不建新进程）
             instance = null
+            needFreshService = true
             return null
         }
         return proxy

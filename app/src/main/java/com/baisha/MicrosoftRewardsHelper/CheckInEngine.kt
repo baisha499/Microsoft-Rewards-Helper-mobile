@@ -63,6 +63,7 @@ object CheckInEngine {
         }
         if (UserShell.get(context) == null) {
             log("✗ Shizuku 用户服务启动失败，请确认 Shizuku 正在运行且已授权")
+            UserShell.lastBindError?.let { log("· 底层原因：$it") }
             return false
         }
         if (!Device.isScreenOn(context)) {
@@ -113,6 +114,7 @@ object CheckInEngine {
             Outcome.OK -> log("✓ 第 2 步：已点击 Microsoft Rewards")
         }
         delay(2_800)
+        if (maxStep < 3) return true
 
         // 第 3 步：签入页 + Day 卡片
         return signInDays(context, cfg, size, log)
@@ -146,6 +148,7 @@ object CheckInEngine {
         }
         if (UserShell.get(context) == null) {
             log("✗ Shizuku 用户服务启动失败，请确认 Shizuku 正在运行且已授权")
+            UserShell.lastBindError?.let { log("· 底层原因：$it") }
             return false
         }
         if (!Device.isScreenOn(context)) {
@@ -347,7 +350,9 @@ object CheckInEngine {
     private fun isRewardText(text: String): Boolean {
         val s = text.replace(" ", "")
         if (s.isEmpty() || s.contains("/")) return false
-        return s.contains("10")
+        // 只认数值 == 10 的按钮，避免把 "100"、"10,000"、进度 "50/100" 误判成 +10
+        val lastNum = Regex("\\d[\\d,.]*").findAll(s).lastOrNull()?.value ?: return false
+        return lastNum.replace(Regex("[^0-9]"), "").toLongOrNull() == 10L
     }
 
     /**
@@ -423,6 +428,7 @@ object CheckInEngine {
         }
         if (UserShell.get(context) == null) {
             log("✗ Shizuku 用户服务启动失败，请确认 Shizuku 正在运行且已授权")
+            UserShell.lastBindError?.let { log("· 底层原因：$it") }
             return false
         }
         if (!Device.isScreenOn(context)) {
