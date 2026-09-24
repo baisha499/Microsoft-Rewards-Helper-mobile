@@ -98,7 +98,8 @@ object ScreenAnalyzer {
         var count = 0
         var blueHits = 0
         var whiteHits = 0
-        val steps = 5
+        // 采样密一点，细笔画的白色文字（"+10"）才有机会被采到
+        val steps = 9
         for (i in 0 until steps) {
             for (j in 0 until steps) {
                 val x = (rect.left + (rect.width().coerceAtLeast(1) * (i + 0.5) / steps)).toInt()

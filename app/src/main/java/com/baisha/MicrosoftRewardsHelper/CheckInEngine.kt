@@ -26,11 +26,12 @@ object CheckInEngine {
     private val DAY_ZH = Regex("第\\s*([1-7])\\s*天")
     /** 每日活动卡片上的奖励按钮文案，只认 "+10" */
     private val REWARD_BTN = Regex("\\+\\s*10(?!\\d)")
-    /** 判定"蓝底白字"所需的蓝底采样点 / 白字采样点数量（采样共 5x5 个点） */
-    private const val BLUE_HITS_MIN = 2
-    private const val WHITE_HITS_MIN = 1
-    /** 取色时把节点矩形往外扩的像素数，保证采到按钮背景而不是只采到白字 */
-    private const val SAMPLE_PADDING = 4
+    /**
+     * 判定"按钮背景是蓝色"所需的最少蓝色采样点数（采样共 9x9 个点）。
+     * 只要有蓝色背景就算候选，不强求采到白色文字——不同手机字体/字号不同，
+     * "+10" 的笔画可能细到采不到，硬要求白字会漏掉按钮。
+     */
+    private const val BLUE_HITS_MIN = 1
     /** 每日活动里全局返回后的界面稳定时间 */
     private const val DAILY_BACK_SETTLE_MS = 1_800L
     /** 每日活动的安全上限：正常靠"找不到 +10"结束，这里只是防止异常时死循环 */
@@ -274,9 +275,12 @@ object CheckInEngine {
     }
 
     /**
-     * 找蓝底白字的 +10 按钮（"+10" 三个字是白色的，衬在蓝色按钮背景上）：
-     * 先按文案筛出含 +10 的节点，再截图取色，只保留区域内"既有蓝底采样点、
-     * 又有白字采样点"的那些，然后在这些候选里随机挑一个。
+     * 找蓝色胶囊按钮上的白色 +10（参考外观：圆角蓝底 + 白字）：
+     * 先按文案筛出含 +10 的节点，再截图取色：
+     * 1) 节点矩形按比例外扩后采色，保证采到按钮背景而不是只采到文字；
+     * 2) 只保留区域内带蓝色背景（蓝度 ≥ `ScreenAnalyzer.BLUE_MIN`）的候选；
+     * 3) 其中能采到白色文字的优先，然后随机挑一个。
+     * 按钮形状/字体因机型而异，这里只认"蓝底 + 白色 +10 文案"这几个通用特征。
      * 截图取色失败时退化为在所有 +10 节点里随机挑一个。
      */
     private suspend fun findRewardButton(
@@ -291,9 +295,11 @@ object CheckInEngine {
 
         val refW = size?.x ?: 1080
         val refH = size?.y ?: 2400
-        // 外扩一点采样，避免节点矩形只包住白字时采不到背景色
-        val rects = candidates.map {
-            Rect(it.bounds).apply { inset(-SAMPLE_PADDING, -SAMPLE_PADDING) }
+        // 按节点尺寸外扩一点采样；节点矩形往往只包住文字，不外扩可能采不到背景
+        val rects = candidates.map { node ->
+            val pad = (minOf(node.bounds.width(), node.bounds.height()) * 0.2f)
+                .toInt().coerceIn(2, 20)
+            Rect(node.bounds).apply { inset(-pad, -pad) }
         }
         val result = Device.analyze(context, rects, refW, refH)
         if (result == null) {
@@ -301,18 +307,20 @@ object CheckInEngine {
             return candidates.randomOrNull()
         }
 
-        val hits = candidates.mapIndexedNotNull { i, node ->
+        val blue = candidates.mapIndexedNotNull { i, node ->
             val s = result.samples.getOrNull(i) ?: return@mapIndexedNotNull null
             log("  · 候选「${node.label}」 rgb(${s.r},${s.g},${s.b}) 蓝底点=${s.blueHits} 白字点=${s.whiteHits}")
-            if (s.blueHits >= BLUE_HITS_MIN && s.whiteHits >= WHITE_HITS_MIN) node else null
+            if (s.blueHits >= BLUE_HITS_MIN) node to s.whiteHits else null
         }
 
-        if (hits.isEmpty()) {
-            log("  · 有 ${candidates.size} 个 +10 节点，但没有一个是蓝底白字")
+        if (blue.isEmpty()) {
+            log("  · 有 ${candidates.size} 个 +10 节点，但都没有蓝色背景")
             return null
         }
-        log("  · 蓝底白字 +10 按钮 ${hits.size} 个，随机挑一个")
-        return hits.random()
+        val withWhite = blue.filter { it.second >= 1 }.map { it.first }
+        val pool = if (withWhite.isNotEmpty()) withWhite else blue.map { it.first }
+        log("  · 蓝底 +10 按钮 ${blue.size} 个（其中采到白字 ${withWhite.size} 个），随机挑一个")
+        return pool.random()
     }
 
     /** 完成后返回本应用 */
