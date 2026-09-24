@@ -12,8 +12,8 @@ android {
         targetSdk = 36
         // 版本号后面括号中的数字：这是 3.0.1 下的第几次修改
         // 注意：versionCode 是给系统用的整数，Android 安装器会把它显示成第二个括号
-        versionCode = 13
-        versionName = "3.0.1(1)"
+        versionCode = 14
+        versionName = "3.0.1(2)"
         // 只打 arm64：ML Kit 的 so 很大，多打一个架构体积就翻一倍，不为 32 位机器保留
         ndk {
             abiFilters += listOf("arm64-v8a")

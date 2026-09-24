@@ -31,19 +31,38 @@ object A11y {
     }
 
     /**
-     * 用 Shizuku 授予 WRITE_SECURE_SETTINGS 并写入 enabled_accessibility_services，
-     * 无需用户手动到设置里点。
+     * 用 Shizuku 授予 WRITE_SECURE_SETTINGS，把本服务**追加**到已启用的无障碍服务列表
+     * （不能整列表覆盖，否则会把别的无障碍服务清掉，有些 ROM 检测到被篡改还会立刻还原），
+     * 再打开总开关。
+     * @return (设置里是否已生效, 排查用的详细信息)
      */
-    fun enable(context: Context): Boolean {
-        if (!Shell.hasPermission()) return false
-        val cmds = listOf(
-            "pm grant $PKG android.permission.WRITE_SECURE_SETTINGS",
-            "settings put secure enabled_accessibility_services $SERVICE",
-            "settings put secure accessibility_enabled 1"
-        )
-        cmds.forEach { Shell.exec(context, it, 8_000) }
-        return enabledInSettings(context)
+    fun enable(context: Context): Pair<Boolean, String> {
+        if (!Shell.hasPermission()) return false to "没有 Shizuku 权限"
+        val detail = StringBuilder()
+        val grant = Shell.exec(context, "pm grant $PKG android.permission.WRITE_SECURE_SETTINGS", 8_000)
+        detail.append("pm grant → out=${grant.out.trim()} err=${grant.err.trim()}\n")
+
+        val before = readEnabledServices(context)
+        detail.append("写入前：$before\n")
+        val list = when {
+            before.isBlank() || before == "null" -> SERVICE
+            before.split(":").any { it.equals(SERVICE, true) } -> before
+            else -> "$before:$SERVICE"
+        }
+        val put = Shell.exec(context, "settings put secure enabled_accessibility_services $list", 8_000)
+        val putOn = Shell.exec(context, "settings put secure accessibility_enabled 1", 8_000)
+        detail.append("写入值：$list\n")
+        detail.append("put 服务 → err=${put.err.trim()}；put 总开关 → err=${putOn.err.trim()}\n")
+
+        val after = readEnabledServices(context)
+        val ok = enabledInSettings(context)
+        detail.append("写入后：$after\n")
+        detail.append("设置里已开启=$ok，服务已连接=${connected()}\n")
+        return ok to detail.toString()
     }
+
+    private fun readEnabledServices(context: Context): String =
+        Shell.exec(context, "settings get secure enabled_accessibility_services", 8_000).out.trim()
 
     fun disable(context: Context) {
         if (!Shell.hasPermission()) return

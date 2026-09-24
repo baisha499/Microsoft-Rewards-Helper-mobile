@@ -5,7 +5,7 @@
 
 > 本项目由 AI 辅助编写。
 
-> 当前版本：`3.0.1(1)`。
+> 当前版本：`3.0.1(2)`。
 
 > **⚠ 只支持 64 位 ARM 设备（arm64-v8a）**：为控制体积，`build.gradle.kts` 里 `ndk.abiFilters` 只保留了 `arm64-v8a`，**32 位 ARM（armeabi-v7a）和 x86 设备安装时会提示"安装包与设备不兼容"**，装不上是正常的。需要支持 32 位机器就自己把 `armeabi-v7a` 加回 `abiFilters`，代价是 APK 体积翻倍。
 
@@ -206,7 +206,7 @@ APK 输出到 `app/build/outputs/apk/debug/app-debug.apk`（也可直接用 Andr
 
 ## 已知限制
 
-- 无障碍服务必须处于「已连接」状态，否则所有功能按钮禁用；部分 ROM 写入 `enabled_accessibility_services` 后仍需手动到系统设置里打开一次。
+- 无障碍服务必须处于「已连接」状态，否则所有功能按钮禁用。「自动开启无障碍」是把本服务**追加**进 `enabled_accessibility_services`（不覆盖已有服务）再开总开关；**部分 ROM / 高版本 Android 仍要求在系统设置里手动点一次确认**，这是系统层限制，绕不过去。自动开启失败时会弹窗显示每条 shell 命令的输出和写入前后的服务列表，方便定位是哪一步没生效。
 - `uiautomator dump` 在息屏、锁屏或某些 WebView 页面可能取不到节点（此时依赖无障碍通道）。
 - Day 卡片的「变黄」靠像素黄度打分判断，颜色校正 / 深色模式导致误判时调整阈值即可。
 - 每日活动**不依赖控件文字**：任务卡标题常是英文、`+10` 在控件树里读不到（实测必应 Rewards 页面如此），所以改为在整张截图上按步长全分辨率扫描找"横向蓝色胶囊"（`ScreenAnalyzer.findBlueBlocks`：3×3 膨胀补上白色文字切开的口子 → 连通域 → 面积太小的当噪点丢掉），再用 OCR 确认按钮上的文字。相关阈值：`ScreenAnalyzer.BLUE_MIN`（单个像素的蓝度门槛）、`CheckInEngine.isButtonLike` 的尺寸/宽高比/上下边界、`isRewardText` 的文字判定。

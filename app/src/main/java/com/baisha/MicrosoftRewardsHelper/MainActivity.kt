@@ -191,12 +191,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<MaterialButton>(R.id.btnOpenShizuku).setOnClickListener { openShizuku() }
         findViewById<MaterialButton>(R.id.btnReconnect).setOnClickListener { reconnectShizuku() }
         findViewById<MaterialButton>(R.id.btnEnableA11y).setOnClickListener { enableA11y() }
-        findViewById<MaterialButton>(R.id.btnOpenA11y).setOnClickListener {
-            startActivity(
-                Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            )
-        }
+        findViewById<MaterialButton>(R.id.btnOpenA11y).setOnClickListener { openAccessibilitySettings() }
         findViewById<MaterialButton>(R.id.btnDetectForeground).setOnClickListener { detectForeground() }
         findViewById<MaterialButton>(R.id.btnScanNodes).setOnClickListener { scanNodes() }
         findViewById<MaterialButton>(R.id.btnDiagnose).setOnClickListener { diagnoseDump() }
@@ -337,14 +332,31 @@ class MainActivity : AppCompatActivity() {
             return
         }
         lifecycleScope.launch {
-            val ok = withContext(Dispatchers.IO) { A11y.enable(this@MainActivity) }
+            val (ok, detail) = withContext(Dispatchers.IO) { A11y.enable(this@MainActivity) }
             Toast.makeText(
                 this@MainActivity,
-                if (ok) "已写入无障碍设置，若仍未生效请到系统无障碍设置里打开本应用" else "写入失败，可用下方按钮手动开启",
+                if (ok) "已写入无障碍设置，若仍未生效请到系统无障碍设置里打开本应用"
+                else "写入失败，可用下方按钮手动开启",
                 Toast.LENGTH_LONG
             ).show()
             refreshShizukuStatus()
+            if (!ok) {
+                // 把 shell 的输入输出摊开，方便看是哪一步没生效
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("无障碍自动开启失败")
+                    .setMessage(detail)
+                    .setPositiveButton("去系统设置手动开") { _, _ -> openAccessibilitySettings() }
+                    .setNegativeButton("关闭", null)
+                    .show()
+            }
         }
+    }
+
+    private fun openAccessibilitySettings() {
+        startActivity(
+            Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
     }
 
     /** 页面可见时持续刷新状态 */
