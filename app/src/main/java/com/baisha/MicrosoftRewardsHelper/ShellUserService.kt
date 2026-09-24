@@ -20,6 +20,12 @@ class ShellUserService : Binder(), IInterface {
     companion object {
         private const val DUMP_FILE = "/data/local/tmp/bing_auto.xml"
         private const val DUMP_FILE_FALLBACK = "/sdcard/bing_auto.xml"
+
+        /**
+         * Shizuku 约定的 destroy 事务码（AIDL 里是 16777114）。
+         * 不实现它，unbind(remove=true) 就杀不掉用户服务进程。
+         */
+        private const val DESTROY_TRANSACTION = 16777115
     }
 
     init {
@@ -68,6 +74,18 @@ class ShellUserService : Binder(), IInterface {
                 val result = analyze(rectsRaw, refW, refH, timeoutMs)
                 reply?.writeNoException()
                 reply?.writeString(result)
+                return true
+            }
+
+            DESTROY_TRANSACTION -> {
+                // Shizuku 要求用户服务自己实现 destroy，否则 unbind(remove=true) 杀不掉
+                // 这个进程；旧进程赖着不走，新的就一直拉不起来
+                data.enforceInterface(UserShellProtocol.DESCRIPTOR)
+                reply?.writeNoException()
+                thread(name = "us-destroy") {
+                    Thread.sleep(50)
+                    kotlin.system.exitProcess(0)
+                }
                 return true
             }
 

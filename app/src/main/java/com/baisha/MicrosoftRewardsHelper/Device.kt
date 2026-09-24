@@ -145,6 +145,7 @@ object Device {
     fun captureToCache(context: Context): File? {
         val dir = context.externalCacheDir ?: return null
         val file = File(dir, "ocr/screen.png")
+
         val proxy = UserShell.get(context) ?: return null
         val out = try {
             proxy.capture(file.absolutePath, 20_000)

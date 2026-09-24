@@ -332,7 +332,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
         lifecycleScope.launch {
-            val (ok, detail) = withContext(Dispatchers.IO) { A11y.enable(this@MainActivity) }
+            val ok = withContext(Dispatchers.IO) { A11y.enable(this@MainActivity) }
             Toast.makeText(
                 this@MainActivity,
                 if (ok) "已写入无障碍设置，若仍未生效请到系统无障碍设置里打开本应用"
@@ -340,15 +340,6 @@ class MainActivity : AppCompatActivity() {
                 Toast.LENGTH_LONG
             ).show()
             refreshShizukuStatus()
-            if (!ok) {
-                // 把 shell 的输入输出摊开，方便看是哪一步没生效
-                AlertDialog.Builder(this@MainActivity)
-                    .setTitle("无障碍自动开启失败")
-                    .setMessage(detail)
-                    .setPositiveButton("去系统设置手动开") { _, _ -> openAccessibilitySettings() }
-                    .setNegativeButton("关闭", null)
-                    .show()
-            }
         }
     }
 
@@ -423,7 +414,6 @@ class MainActivity : AppCompatActivity() {
      * 如果本进程启动时 Shizuku 还没跑起来，就永远拿不到 binder —— 只能重启进程。
      */
     private fun reconnectShizuku() {
-        log("⇢ 重新等待 Shizuku binder…")
         lifecycleScope.launch {
             val connected = withContext(Dispatchers.IO) {
                 repeat(10) {
@@ -433,11 +423,14 @@ class MainActivity : AppCompatActivity() {
                 false
             }
             if (connected) {
-                log("✓ 已连上 Shizuku 服务")
+                // 先清掉可能残留的旧用户服务，再重新绑定
+                withContext(Dispatchers.IO) {
+                    UserShell.kick(this@MainActivity)
+                    UserShell.get(this@MainActivity)
+                }
                 refreshShizukuStatus()
                 return@launch
             }
-            log("✗ 本进程拿不到 binder：Shizuku 只在冷启动时投递，正在关闭并重新打开…")
             restartAppProcess()
         }
     }

@@ -17,11 +17,28 @@ object UserShell {
     private const val TAG = "bing_shell"
     private const val VERSION = 1
     private const val WAIT_MS = 8_000L
+    /** 绑定失败后的冷却时间，避免每条 shell 命令都卡满重试 */
+    private const val BIND_COOLDOWN_MS = 30_000L
 
     private val lock = Any()
 
     @Volatile
     private var instance: Proxy? = null
+
+    /** 在这个时间点之前不再尝试绑定（绑定刚失败过） */
+    @Volatile
+    private var nextBindAt = 0L
+
+    /**
+     * 传给 Shizuku 的服务代码版本。Shizuku 发现版本变了才会重建用户服务进程；
+     * 每次绑定失败就 +1，避免它一直拿着那个"存在但起不来"的旧服务不放。
+     */
+    @Volatile
+    private var serviceVersion = VERSION
+
+    /** tag 后缀序号：0 表示用原 tag，非 0 时另起一个服务，绕开杀不掉的旧进程 */
+    @Volatile
+    private var tagSeq = 0
 
     @Volatile
     private var signal: CountDownLatch? = null
@@ -55,10 +72,15 @@ object UserShell {
      */
     fun setReleased(context: Context, value: Boolean) {
         released = value
-        if (value) release(context)
+        if (value) {
+            release(context)
+        } else {
+            // 恢复后立刻允许重新绑定，不用等冷却
+            nextBindAt = 0L
+        }
     }
 
-    /** 获取可用实例，必要时发起绑定并等待 */
+    /** 获取可用实例，必要时发起绑定并等待；失败会重试一次 */
     fun get(context: Context): Proxy? {
         if (released) return null
         alive()?.let { return it }
@@ -67,30 +89,73 @@ object UserShell {
         // 否则 onServiceConnected 永远等不到，直接 ANR
         val onMainThread = android.os.Looper.myLooper() == android.os.Looper.getMainLooper()
 
+        // 刚失败过就别再死等了，否则每次 exec 都要卡满重试时间
+        if (instance == null && System.currentTimeMillis() < nextBindAt) return null
+
+        var result: Proxy? = null
         synchronized(lock) {
-            alive()?.let { return it }
-            val latch = CountDownLatch(1)
-            signal = latch
-            val args = Shizuku.UserServiceArgs(
-                ComponentName(context.packageName, ShellUserService::class.java.name)
-            )
-                .processNameSuffix(":shell")
-                .tag(TAG)
-                .version(VERSION)
-                .daemon(false)
-            try {
-                Shizuku.bindUserService(args, connection)
-            } catch (e: Throwable) {
-                signal = null
-                return null
+            result = alive()
+            if (result == null) {
+                val args = buildArgs(context)
+                repeat(2) { attempt ->
+                    // 第二次之前先清掉残留服务，很多"一直不回调"就是残留进程卡着
+                    if (attempt > 0) {
+                        runCatching { Shizuku.unbindUserService(args, null, true) }
+                        instance = null
+                    }
+                    bindOnce(args, wait = !onMainThread)
+                    result = alive()
+                    if (result != null) return@repeat
+                }
             }
-            if (onMainThread) {
-                // 主线程：只发起绑定，不等待，调用方稍后重试即可
-                return null
-            }
-            runCatching { latch.await(WAIT_MS, TimeUnit.MILLISECONDS) }
         }
-        return alive()
+        if (result != null) {
+            nextBindAt = 0L
+        } else {
+            nextBindAt = System.currentTimeMillis() + BIND_COOLDOWN_MS
+            // 下次换个版本号，让 Shizuku 重建服务而不是复用那个起不来的
+            serviceVersion++
+        }
+        return result
+    }
+
+    /**
+     * 清掉可能残留的旧用户服务进程，并允许立刻重新绑定。
+     * 残留服务会让新的 bindUserService 一直不回调——服务进程卡在旧代码上，
+     * Shizuku 就拉不起新的。
+     */
+    fun kick(context: Context) {
+        runCatching { Shizuku.unbindUserService(buildArgs(context), null, true) }
+        instance = null
+        nextBindAt = 0L
+        // 换 service version 强迫 Shizuku 重建；旧进程若是旧版 APK 起的（没实现 destroy）
+        // 杀不掉，再换个 tag，让它当作全新服务另起一个
+        serviceVersion++
+        tagSeq++
+    }
+
+    private fun buildArgs(context: Context): Shizuku.UserServiceArgs =
+        Shizuku.UserServiceArgs(
+            ComponentName(context.packageName, ShellUserService::class.java.name)
+        )
+            .processNameSuffix(":shell")
+            .tag(if (tagSeq == 0) TAG else "${TAG}_$tagSeq")
+            .version(serviceVersion)
+            .daemon(false)
+
+    /** 发起一次绑定；wait=false 时不等回调（主线程用） */
+    private fun bindOnce(args: Shizuku.UserServiceArgs, wait: Boolean): Boolean {
+        val latch = CountDownLatch(1)
+        signal = latch
+        return try {
+            Shizuku.bindUserService(args, connection)
+            if (wait) runCatching { latch.await(WAIT_MS, TimeUnit.MILLISECONDS) }
+            true
+        } catch (_: Throwable) {
+            false
+        } finally {
+            signal = null
+        }
     }
 
     fun release(context: Context) {
@@ -107,9 +172,13 @@ object UserShell {
 
     private fun alive(): Proxy? {
         val proxy = instance ?: return null
-        return runCatching {
-            if (proxy.ping()) proxy else null
-        }.getOrNull()
+        val ok = runCatching { proxy.ping() }.getOrDefault(false)
+        if (!ok) {
+            // 服务进程被杀 / binder 断了，下次 get() 会重新绑定
+            instance = null
+            return null
+        }
+        return proxy
     }
 
     /** 用户服务远程调用代理 */
