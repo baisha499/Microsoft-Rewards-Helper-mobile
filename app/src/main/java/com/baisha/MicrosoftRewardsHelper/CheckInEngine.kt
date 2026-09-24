@@ -26,11 +26,6 @@ object CheckInEngine {
 
     private val DAY_EN = Regex("day\\s*([1-7])", RegexOption.IGNORE_CASE)
     private val DAY_ZH = Regex("第\\s*([1-7])\\s*天")
-    /** 全屏找蓝色按钮的网格粒度：16x32 格 */
-    private const val BTN_COLS = 16
-    private const val BTN_ROWS = 32
-    /** 一格（9x9 采样）里至少有多少个蓝点才算"蓝色格子" */
-    private const val BTN_CELL_BLUE_MIN = 15
     /** 等奖励页加载好的超时与轮询间隔（不写死等待秒数，认出首页文字就继续） */
     private const val PAGE_READY_TIMEOUT_MS = 20_000L
     private const val PAGE_READY_POLL_MS = 1_500L
@@ -269,9 +264,9 @@ object CheckInEngine {
 
             log("  · 全局手势返回奖励页")
             Device.back(context)
+            // 返回后直接回到每日活动列表（剩下那几个按钮还在原位），不用再等首页、
+            // 也不用再滚动，下一轮直接截屏 OCR 就行
             delay(DAILY_BACK_SETTLE_MS)
-            // 返回后页面会重新渲染一次，等它认得出首页再继续找下一个（这里给短一点的超时）
-            waitPageReady(context, log, 8_000L)
         }
 
         return clicked
@@ -305,26 +300,33 @@ object CheckInEngine {
         size: Point?,
         log: CheckInLogger
     ): Point? {
-        // 先截一张图存到应用的外部缓存目录（shell 能写、应用能读），取色和 OCR 都用这一张
+        // 先截一张图存到应用的外部缓存目录（shell 能写、应用能读），找按钮和 OCR 都用这一张
         val shot = Device.captureToCache(context)
-        if (shot == null) log("    · 没能保存截图，取色会重新截屏，但无法做 OCR")
+        if (shot == null) {
+            log("    · 没能保存截图，无法找按钮和 OCR")
+            return null
+        }
+        val w = size?.x ?: 1080
+        val h = size?.y ?: 2400
+        val image = withContext(Dispatchers.IO) { ScreenAnalyzer.loadPng(shot.absolutePath) }
+        if (image == null) {
+            log("    · 截图解码失败，为避免误点本次不点")
+            return null
+        }
 
-        val got = detectBlueBlocks(context, size, log, shot?.absolutePath) ?: return null
-        val (blocks, maxHits) = got
+        // 整张图扫一遍找蓝色块（不再用粗网格，按钮压在格子边界上也不会漏）
+        val blocks = withContext(Dispatchers.IO) {
+            ScreenAnalyzer.findBlueBlocks(image, w, h).filter { isButtonLike(it, w, h) }
+        }
         if (blocks.isEmpty()) {
-            log("    · 全屏最蓝的一格只有 $maxHits/81 个蓝点，没有像按钮的蓝色块")
+            log("    · 整屏没有找到像按钮的蓝色块")
             return null
         }
 
         // 逐个裁出来 OCR，只点写着 +10 的，避免点到兑换之类的其它蓝色按钮
-        val image = withContext(Dispatchers.IO) { shot?.let { ScreenAnalyzer.loadPng(it.absolutePath) } }
-        if (image == null) {
-            log("    · 截图解码失败，无法 OCR，为避免误点本次不点")
-            return null
-        }
         val rewards = ArrayList<Rect>()
         blocks.forEachIndexed { i, block ->
-            val bmp = OcrCache.crop(image, block)
+            val bmp = OcrCache.crop(image, block, w, h)
             val text = if (bmp == null) "" else Ocr.text(bmp)
             log("    · 蓝色块 [${block.left},${block.top}][${block.right},${block.bottom}] " +
                 "${block.width()}x${block.height()} OCR=「$text」")
@@ -353,12 +355,8 @@ object CheckInEngine {
      * 和签入 / 搜索 / 每日活动三块进度，此时并没有蓝色按钮，所以这里看的是首页文字，
      * 不是蓝色按钮；也不写死等待秒数（机型、分辨率不同加载快慢差很多）。
      */
-    private suspend fun waitPageReady(
-        context: Context,
-        log: CheckInLogger,
-        timeoutMs: Long = PAGE_READY_TIMEOUT_MS
-    ) {
-        val deadline = System.currentTimeMillis() + timeoutMs
+    private suspend fun waitPageReady(context: Context, log: CheckInLogger) {
+        val deadline = System.currentTimeMillis() + PAGE_READY_TIMEOUT_MS
         var round = 0
         var blankRounds = 0
         while (System.currentTimeMillis() < deadline) {
@@ -379,82 +377,7 @@ object CheckInEngine {
             round++
             delay(PAGE_READY_POLL_MS)
         }
-        log("· 等了 ${timeoutMs / 1000}s 还没认出首页，按原流程继续")
-    }
-
-    /**
-     * 全屏截一次图，按 BTN_COLS x BTN_ROWS 网格取色，把"蓝点够多"的相邻格子合并成连通块，
-     * 只留下形状像横向胶囊的。
-     * @return (蓝色块列表, 全屏最蓝一格的蓝点数)；截图失败返回 null
-     */
-    private suspend fun detectBlueBlocks(
-        context: Context,
-        size: Point?,
-        log: CheckInLogger,
-        pngPath: String? = null
-    ): Pair<List<Rect>, Int>? {
-        val w = size?.x ?: 1080
-        val h = size?.y ?: 2400
-        val cw = w / BTN_COLS
-        val ch = h / BTN_ROWS
-        if (cw < 4 || ch < 4) return null
-
-        val cells = ArrayList<Rect>(BTN_COLS * BTN_ROWS)
-        for (j in 0 until BTN_ROWS) {
-            for (i in 0 until BTN_COLS) {
-                val l = i * cw
-                val t = j * ch
-                cells.add(
-                    Rect(
-                        l, t,
-                        if (i == BTN_COLS - 1) w else l + cw,
-                        if (j == BTN_ROWS - 1) h else t + ch
-                    )
-                )
-            }
-        }
-
-        val result = Device.analyze(context, cells, w, h, pngPath)
-        if (result == null) {
-            log("    · 截图取色失败")
-            return null
-        }
-        val blue = BooleanArray(cells.size) { i ->
-            (result.samples.getOrNull(i)?.blueHits ?: 0) >= BTN_CELL_BLUE_MIN
-        }
-        val blocks = clusterBlueCells(cells, blue).filter { isButtonLike(it, w, h) }
-        return blocks to (result.samples.maxOfOrNull { it.blueHits } ?: 0)
-    }
-
-    /** 把相邻的蓝色格子合并成矩形（4 邻接连通域） */
-    private fun clusterBlueCells(cells: List<Rect>, blue: BooleanArray): List<Rect> {
-        val visited = BooleanArray(cells.size)
-        val out = ArrayList<Rect>()
-        for (start in cells.indices) {
-            if (!blue[start] || visited[start]) continue
-            val queue = ArrayDeque<Int>()
-            queue.add(start)
-            visited[start] = true
-            var box = Rect(cells[start])
-            fun push(n: Int) {
-                if (blue[n] && !visited[n]) {
-                    visited[n] = true
-                    queue.add(n)
-                }
-            }
-            while (queue.isNotEmpty()) {
-                val idx = queue.removeFirst()
-                box.union(cells[idx])
-                val i = idx % BTN_COLS
-                val j = idx / BTN_COLS
-                if (i > 0) push(idx - 1)
-                if (i < BTN_COLS - 1) push(idx + 1)
-                if (j > 0) push(idx - BTN_COLS)
-                if (j < BTN_ROWS - 1) push(idx + BTN_COLS)
-            }
-            out.add(box)
-        }
-        return out
+        log("· 等了 ${PAGE_READY_TIMEOUT_MS / 1000}s 还没认出首页，按原流程继续")
     }
 
     /** 蓝色块像不像奖励按钮：横向、不太大不太小，且不在状态栏/底部导航栏 */

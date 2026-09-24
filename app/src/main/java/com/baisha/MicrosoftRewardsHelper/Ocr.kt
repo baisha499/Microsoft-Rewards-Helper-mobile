@@ -54,22 +54,26 @@ object OcrCache {
         runCatching { dir(context).deleteRecursively() }
     }
 
-    /** 从截图中裁出一块（截图是 PngReader 解出来的 ARGB 像素） */
-    fun crop(image: PngImage, rect: Rect): Bitmap? {
-        val l = rect.left.coerceIn(0, image.width - 1)
-        val t = rect.top.coerceIn(0, image.height - 1)
-        val r = rect.right.coerceIn(l + 1, image.width)
-        val b = rect.bottom.coerceIn(t + 1, image.height)
+    /**
+     * 从截图中裁出一块（rect 是屏幕坐标，内部会换算成截图像素坐标；
+     * 截图是 PngReader 解出来的 ARGB 像素）
+     */
+    fun crop(image: PngImage, rect: Rect, refW: Int, refH: Int): Bitmap? {
+        val box = ScreenAnalyzer.toImageRect(rect, image, refW, refH)
+        val l = box.left.coerceIn(0, image.width - 1)
+        val t = box.top.coerceIn(0, image.height - 1)
+        val r = box.right.coerceIn(l + 1, image.width)
+        val b = box.bottom.coerceIn(t + 1, image.height)
         val w = r - l
         val h = b - t
         if (w <= 0 || h <= 0) return null
-        val px = IntArray(w * h)
+        val pixels = IntArray(w * h)
         for (y in 0 until h) {
             val src = (t + y) * image.width + l
-            System.arraycopy(image.pixels, src, px, y * w, w)
+            System.arraycopy(image.pixels, src, pixels, y * w, w)
         }
         return Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).apply {
-            setPixels(px, 0, w, 0, 0, w, h)
+            setPixels(pixels, 0, w, 0, 0, w, h)
         }
     }
 

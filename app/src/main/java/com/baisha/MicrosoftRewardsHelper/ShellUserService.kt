@@ -65,8 +65,7 @@ class ShellUserService : Binder(), IInterface {
                 val refW = data.readInt()
                 val refH = data.readInt()
                 val timeoutMs = data.readInt()
-                val pngPath = data.readString()
-                val result = analyze(rectsRaw, refW, refH, timeoutMs, pngPath)
+                val result = analyze(rectsRaw, refW, refH, timeoutMs)
                 reply?.writeNoException()
                 reply?.writeString(result)
                 return true
@@ -166,17 +165,11 @@ class ShellUserService : Binder(), IInterface {
         ""
     }
 
-    /** screencap 后对给定区域取色，返回序列化结果；pngPath 非空时直接复用已有的截图 */
-    fun analyze(
-        rectsRaw: String,
-        refW: Int,
-        refH: Int,
-        timeoutMs: Int,
-        pngPath: String? = null
-    ): String {
+    /** screencap 后对给定区域取色，返回序列化结果 */
+    fun analyze(rectsRaw: String, refW: Int, refH: Int, timeoutMs: Int): String {
         val rects = RectSpec.parse(rectsRaw)
         if (rects.isEmpty()) return ""
-        val result = ScreenAnalyzer.analyze(rects, refW, refH, pngPath) ?: return ""
+        val result = ScreenAnalyzer.analyze(rects, refW, refH) ?: return ""
         return ScreenAnalyzer.serialize(result)
     }
 

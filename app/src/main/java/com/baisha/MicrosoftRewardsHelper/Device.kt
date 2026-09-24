@@ -121,17 +121,16 @@ object Device {
         return NodeSummary.parse(summary)
     }
 
-    /** 对若干区域截图取色；pngPath 非空时复用已有的截图，不再重复截屏 */
+    /** 对若干区域截图取色 */
     fun analyze(
         context: Context,
         rects: List<android.graphics.Rect>,
         refW: Int,
-        refH: Int,
-        pngPath: String? = null
+        refH: Int
     ): ScreenAnalyzer.Result? {
         val proxy = UserShell.get(context) ?: return null
         val text = try {
-            proxy.analyze(RectSpec.format(rects), refW, refH, 20_000, pngPath)
+            proxy.analyze(RectSpec.format(rects), refW, refH)
         } catch (_: Throwable) {
             null
         } ?: return null
