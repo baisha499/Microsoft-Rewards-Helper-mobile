@@ -14,4 +14,5 @@ object UserShellProtocol {
     const val DUMP_NODES = IBinder.FIRST_CALL_TRANSACTION + 1
     const val ANALYZE = IBinder.FIRST_CALL_TRANSACTION + 2
     const val EXEC_ALL = IBinder.FIRST_CALL_TRANSACTION + 3
+    const val CAPTURE = IBinder.FIRST_CALL_TRANSACTION + 4
 }

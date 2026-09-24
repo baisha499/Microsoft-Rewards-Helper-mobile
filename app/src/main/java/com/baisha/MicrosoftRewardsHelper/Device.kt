@@ -3,6 +3,7 @@ package com.baisha.MicrosoftRewardsHelper
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.graphics.Point
+import java.io.File
 
 /** 常用设备状态查询 / 操作，全部走 Shizuku 用户服务里的 shell */
 object Device {
@@ -120,16 +121,39 @@ object Device {
         return NodeSummary.parse(summary)
     }
 
-    /** 对若干区域截图取色 */
-    fun analyze(context: Context, rects: List<android.graphics.Rect>, refW: Int, refH: Int): ScreenAnalyzer.Result? {
+    /** 对若干区域截图取色；pngPath 非空时复用已有的截图，不再重复截屏 */
+    fun analyze(
+        context: Context,
+        rects: List<android.graphics.Rect>,
+        refW: Int,
+        refH: Int,
+        pngPath: String? = null
+    ): ScreenAnalyzer.Result? {
         val proxy = UserShell.get(context) ?: return null
         val text = try {
-            proxy.analyze(RectSpec.format(rects), refW, refH)
+            proxy.analyze(RectSpec.format(rects), refW, refH, 20_000, pngPath)
         } catch (_: Throwable) {
             null
         } ?: return null
         if (text.isBlank()) return null
         return ScreenAnalyzer.parse(text)
+    }
+
+    /**
+     * 截屏保存到应用可读的缓存目录（shell 进程写，应用进程读，用于 OCR 裁剪）。
+     * @return 成功时返回该截图文件
+     */
+    fun captureToCache(context: Context): File? {
+        val dir = context.externalCacheDir ?: return null
+        val file = File(dir, "ocr/screen.png")
+        val proxy = UserShell.get(context) ?: return null
+        val out = try {
+            proxy.capture(file.absolutePath, 20_000)
+        } catch (_: Throwable) {
+            null
+        }
+        if (out.isNullOrBlank() || !file.exists() || file.length() <= 0L) return null
+        return file
     }
 
     /** 排查 uiautomator 取不到界面的原因，返回若干条 (标题, 输出) */

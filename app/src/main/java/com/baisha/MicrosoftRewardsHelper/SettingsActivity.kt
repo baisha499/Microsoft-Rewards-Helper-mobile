@@ -113,8 +113,8 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun clearCache() {
         lifecycleScope.launch {
-            withContext(Dispatchers.IO) { Config.clearCache(this@SettingsActivity) }
-            toast("✓ 缓存已清理（用户配置未受影响）")
+            val cleared = withContext(Dispatchers.IO) { Config.clearCache(this@SettingsActivity) }
+            toast("✓ 已清理 ${Config.formatSize(cleared)} 缓存（用户配置未受影响）")
             refreshCacheSize()
         }
     }

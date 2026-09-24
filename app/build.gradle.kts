@@ -10,8 +10,10 @@ android {
         applicationId = "com.baisha.MicrosoftRewardsHelper"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        // 版本号后面括号中的数字：这是 2.0.1 下的第几次修改
+        // 注意：versionCode 是给系统用的整数，Android 安装器会把它显示成第二个括号
+        versionCode = 9
+        versionName = "2.0.1(8)"
     }
 
     buildTypes {
@@ -44,4 +46,7 @@ dependencies {
 
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
+
+    // 离线文字识别（模型打包进 APK，运行时不联网、不依赖 Google Play 服务）
+    implementation("com.google.mlkit:text-recognition:16.0.0")
 }

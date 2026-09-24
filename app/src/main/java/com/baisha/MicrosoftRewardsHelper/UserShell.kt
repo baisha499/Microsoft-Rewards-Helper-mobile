@@ -135,12 +135,26 @@ object UserShell {
                 writeInt(timeoutMs)
             }
 
-        /** 对若干区域取色，用于判断 Day 卡片是否变黄 */
-        fun analyze(rectsRaw: String, refW: Int, refH: Int, timeoutMs: Int = 20_000): String? =
+        /** 对若干区域取色，用于判断 Day 卡片是否变黄；pngPath 非空时复用已有截图 */
+        fun analyze(
+            rectsRaw: String,
+            refW: Int,
+            refH: Int,
+            timeoutMs: Int = 20_000,
+            pngPath: String? = null
+        ): String? =
             call(UserShellProtocol.ANALYZE) {
                 writeString(rectsRaw)
                 writeInt(refW)
                 writeInt(refH)
+                writeInt(timeoutMs)
+                writeString(pngPath)
+            }
+
+        /** 截屏保存到指定路径，成功返回该路径 */
+        fun capture(path: String, timeoutMs: Int = 20_000): String? =
+            call(UserShellProtocol.CAPTURE) {
+                writeString(path)
                 writeInt(timeoutMs)
             }
 

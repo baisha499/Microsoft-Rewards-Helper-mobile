@@ -6,6 +6,8 @@ import android.graphics.Rect
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 typealias CheckInLogger = (String) -> Unit
 
@@ -24,17 +26,21 @@ object CheckInEngine {
 
     private val DAY_EN = Regex("day\\s*([1-7])", RegexOption.IGNORE_CASE)
     private val DAY_ZH = Regex("第\\s*([1-7])\\s*天")
-    /** 每日活动卡片上的奖励按钮文案，只认 "+10" */
-    private val REWARD_BTN = Regex("\\+\\s*10(?!\\d)")
-    /**
-     * 判定"按钮背景是蓝色"所需的最少蓝色采样点数（采样共 9x9 个点）。
-     * 只要有蓝色背景就算候选，不强求采到白色文字——不同手机字体/字号不同，
-     * "+10" 的笔画可能细到采不到，硬要求白字会漏掉按钮。
-     */
-    private const val BLUE_HITS_MIN = 1
+    /** 全屏找蓝色按钮的网格粒度：16x32 格 */
+    private const val BTN_COLS = 16
+    private const val BTN_ROWS = 32
+    /** 一格（9x9 采样）里至少有多少个蓝点才算"蓝色格子" */
+    private const val BTN_CELL_BLUE_MIN = 15
+    /** 等奖励页加载好的超时与轮询间隔（不写死等待秒数，认出首页文字就继续） */
+    private const val PAGE_READY_TIMEOUT_MS = 20_000L
+    private const val PAGE_READY_POLL_MS = 1_500L
+    /** 奖励页首页会出现这些字样（积分 / 连续 53 day / 签入…） */
+    private val PAGE_READY_WORDS = listOf("积分", "连续", "day", "签入", "Rewards")
     /** 每日活动里全局返回后的界面稳定时间 */
     private const val DAILY_BACK_SETTLE_MS = 1_800L
-    /** 每日活动的安全上限：正常靠"找不到 +10"结束，这里只是防止异常时死循环 */
+    /** 找不到按钮 / 停在同一个按钮时的重试上限，超过就认为今天没有可做的了 */
+    private const val MAX_NO_PROGRESS = 4
+    /** 每日活动的安全上限：正常靠"找不到按钮"结束，这里只是防止异常时死循环 */
     private const val MAX_DAILY_CLICKS = 20
     /** 必应首页搜索框的提示文字 */
     private const val SEARCH_BOX_HINT = "探索国内新鲜事"
@@ -197,10 +203,10 @@ object CheckInEngine {
         }
         delay(2_800)
 
-        // 第 3 步：上划两下 → 找蓝底白字的 +10 → 依次点击
+        // 第 3 步：上划两下 → 全屏找蓝色奖励按钮 → 依次点击
         val clicked = completeDailyTasks(context, size, cfg.dailyWaitSec, log)
         if (clicked == 0) {
-            log("✓ 未发现可点击的 +10 按钮，每日活动已完成")
+            log("✓ 未发现可点击的蓝色奖励按钮，每日活动已完成")
         } else {
             log("✓ 每日活动完成，共点击 $clicked 个奖励按钮")
         }
@@ -210,10 +216,12 @@ object CheckInEngine {
     }
 
     /**
-     * 在 Rewards 页面依次点击每日活动里的 +10 按钮：
-     * 先上划两下并等待，之后每轮都重新截图取色，找蓝底白字的 +10 按钮，
-     * 在找到的候选里随机点一个 → 等待 waitSec 秒 → 全局手势返回 → 继续下一轮，
-     * 直到界面上再也找不到 +10 为止。
+     * 在 Rewards 页面依次点击每日活动里的蓝色奖励按钮：
+     * 先等页面加载出来，再上划两下并等待，之后每轮都重新截屏，全屏按网格取色找蓝色
+     * 胶囊按钮并 OCR 确认是 +10（任务卡文案可能是英文、按钮文案也读不到控件，
+     * 所以纯靠像素 + OCR），随机挑一个点 → 等待 waitSec 秒 → 全局手势返回 → 继续下一轮。
+     * 返回后页面往往回到奖励页顶部（每日活动区在下面），所以找不到或又停在同一个按钮时
+     * 会再上划一下重试，连续几次没进展才停。
      * @return 实际点击的按钮数量
      */
     private suspend fun completeDailyTasks(
@@ -222,35 +230,39 @@ object CheckInEngine {
         waitSec: Int,
         log: CheckInLogger
     ): Int {
-        scrollUpTwice(context, size, log)
-        log("  · 等待 ${waitSec}s 后开始查找 +10 按钮")
+        OcrCache.reset(context)
+        waitPageReady(context, log)
+        scrollUp(context, size, 2, log)
+        log("  · 等待 ${waitSec}s 后开始查找蓝色奖励按钮")
         delay(waitSec * 1_000L)
 
         var clicked = 0
-        var emptyRetry = 0
+        var stuck = 0
+        var lastTap: Point? = null
 
-        while (clicked < MAX_DAILY_CLICKS) {
-            val nodes = Device.nodes(context)
-            if (nodes == null) {
-                if (++emptyRetry >= 10) {
-                    log("  · 连续取不到界面，停止")
+        while (clicked < MAX_DAILY_CLICKS && stuck < MAX_NO_PROGRESS) {
+            val button = findBlueRewardButton(context, size, log)
+            val sameAsLast = button != null && lastTap != null && near(button, lastTap)
+            if (button == null || sameAsLast) {
+                stuck++
+                if (stuck >= MAX_NO_PROGRESS) {
+                    log("  · 连续 $stuck 次没进展，停止")
                     break
                 }
-                log("  · 未取到界面，重试中 ($emptyRetry/10)")
-                delay(POLL_MS)
+                log(
+                    if (button == null) "  · 当前界面没有 OCR 出 +10 的蓝色按钮，上划一下再试 ($stuck/$MAX_NO_PROGRESS)"
+                    else "  · 还是刚才那个按钮，上划一下换个位置 ($stuck/$MAX_NO_PROGRESS)"
+                )
+                scrollUp(context, size, 1, log)
+                delay(waitSec * 1_000L)
                 continue
             }
-            emptyRetry = 0
 
-            val button = findRewardButton(context, nodes, size, log)
-            if (button == null) {
-                log("  · 当前没有蓝底白字的 +10，停止")
-                break
-            }
-
+            stuck = 0
+            lastTap = button
             clicked++
-            log("→ 点击第 $clicked 个 +10 按钮「${button.label}」 (${button.centerX}, ${button.centerY})")
-            Device.tap(context, button.centerX, button.centerY)
+            log("→ 点击第 $clicked 个蓝色按钮 ($button.x, $button.y)")
+            Device.tap(context, button.x, button.y)
 
             log("  · 等待 ${waitSec}s")
             delay(waitSec * 1_000L)
@@ -258,69 +270,206 @@ object CheckInEngine {
             log("  · 全局手势返回奖励页")
             Device.back(context)
             delay(DAILY_BACK_SETTLE_MS)
+            // 返回后页面会重新渲染一次，等它认得出首页再继续找下一个（这里给短一点的超时）
+            waitPageReady(context, log, 8_000L)
         }
 
         return clicked
     }
 
-    /** 上划（手指由下往上）两下，让每日活动区块露出来 */
-    private suspend fun scrollUpTwice(context: Context, size: Point?, log: CheckInLogger) {
+    /** 两个点是不是其实就是同一个位置 */
+    private fun near(a: Point, b: Point): Boolean =
+        kotlin.math.abs(a.x - b.x) <= 24 && kotlin.math.abs(a.y - b.y) <= 24
+
+    /** 上划（手指由下往上），用来把每日活动区块露出来 */
+    private suspend fun scrollUp(context: Context, size: Point?, times: Int, log: CheckInLogger) {
         val w = size?.x ?: 1080
         val h = size?.y ?: 2400
-        repeat(2) { i ->
-            log("⇢ 上划第 ${i + 1}/2 次")
+        repeat(times) { i ->
+            log("⇢ 上划第 ${i + 1}/$times 次")
             Device.swipe(context, w / 2, (h * 0.70f).toInt(), w / 2, (h * 0.40f).toInt(), 500)
             delay(1_200)
         }
     }
 
     /**
-     * 找蓝色胶囊按钮上的白色 +10（参考外观：圆角蓝底 + 白字）：
-     * 先按文案筛出含 +10 的节点，再截图取色：
-     * 1) 节点矩形按比例外扩后采色，保证采到按钮背景而不是只采到文字；
-     * 2) 只保留区域内带蓝色背景（蓝度 ≥ `ScreenAnalyzer.BLUE_MIN`）的候选；
-     * 3) 其中能采到白色文字的优先，然后随机挑一个。
-     * 按钮形状/字体因机型而异，这里只认"蓝底 + 白色 +10 文案"这几个通用特征。
-     * 截图取色失败时退化为在所有 +10 节点里随机挑一个。
+     * 全屏截一次图，按 16x32 网格取色，把"蓝点够多"的相邻格子合并成连通块，
+     * 留下形状像横向胶囊（宽高比够大、尺寸合理、不在状态栏和底部导航栏里）的，
+     * 然后随机挑一个返回它的中心。
+     *
+     * 任务卡的文案可能是英文、+10 的文案又读不到控件，所以这里完全不看控件文字，
+     * 只认"蓝色块"这个视觉特征；按钮的长宽具体是多少、什么蓝色深浅都不写死。
      */
-    private suspend fun findRewardButton(
+    private suspend fun findBlueRewardButton(
         context: Context,
-        nodes: List<UiNode>,
         size: Point?,
         log: CheckInLogger
-    ): UiNode? {
-        val candidates = nodes.filter { REWARD_BTN.containsMatchIn(it.label) }
-            .sortedWith(compareBy<UiNode>({ it.centerY }, { it.centerX }))
-        if (candidates.isEmpty()) return null
+    ): Point? {
+        // 先截一张图存到应用的外部缓存目录（shell 能写、应用能读），取色和 OCR 都用这一张
+        val shot = Device.captureToCache(context)
+        if (shot == null) log("    · 没能保存截图，取色会重新截屏，但无法做 OCR")
 
-        val refW = size?.x ?: 1080
-        val refH = size?.y ?: 2400
-        // 按节点尺寸外扩一点采样；节点矩形往往只包住文字，不外扩可能采不到背景
-        val rects = candidates.map { node ->
-            val pad = (minOf(node.bounds.width(), node.bounds.height()) * 0.2f)
-                .toInt().coerceIn(2, 20)
-            Rect(node.bounds).apply { inset(-pad, -pad) }
-        }
-        val result = Device.analyze(context, rects, refW, refH)
-        if (result == null) {
-            log("  · 截图取色失败，退化为在 ${candidates.size} 个 +10 节点里随机挑一个")
-            return candidates.randomOrNull()
-        }
-
-        val blue = candidates.mapIndexedNotNull { i, node ->
-            val s = result.samples.getOrNull(i) ?: return@mapIndexedNotNull null
-            log("  · 候选「${node.label}」 rgb(${s.r},${s.g},${s.b}) 蓝底点=${s.blueHits} 白字点=${s.whiteHits}")
-            if (s.blueHits >= BLUE_HITS_MIN) node to s.whiteHits else null
-        }
-
-        if (blue.isEmpty()) {
-            log("  · 有 ${candidates.size} 个 +10 节点，但都没有蓝色背景")
+        val got = detectBlueBlocks(context, size, log, shot?.absolutePath) ?: return null
+        val (blocks, maxHits) = got
+        if (blocks.isEmpty()) {
+            log("    · 全屏最蓝的一格只有 $maxHits/81 个蓝点，没有像按钮的蓝色块")
             return null
         }
-        val withWhite = blue.filter { it.second >= 1 }.map { it.first }
-        val pool = if (withWhite.isNotEmpty()) withWhite else blue.map { it.first }
-        log("  · 蓝底 +10 按钮 ${blue.size} 个（其中采到白字 ${withWhite.size} 个），随机挑一个")
-        return pool.random()
+
+        // 逐个裁出来 OCR，只点写着 +10 的，避免点到兑换之类的其它蓝色按钮
+        val image = withContext(Dispatchers.IO) { shot?.let { ScreenAnalyzer.loadPng(it.absolutePath) } }
+        if (image == null) {
+            log("    · 截图解码失败，无法 OCR，为避免误点本次不点")
+            return null
+        }
+        val rewards = ArrayList<Rect>()
+        blocks.forEachIndexed { i, block ->
+            val bmp = OcrCache.crop(image, block)
+            val text = if (bmp == null) "" else Ocr.text(bmp)
+            log("    · 蓝色块 [${block.left},${block.top}][${block.right},${block.bottom}] " +
+                "${block.width()}x${block.height()} OCR=「$text」")
+            if (bmp != null) OcrCache.save(context, i, block, bmp, text)
+            if (isRewardText(text)) rewards += block
+        }
+
+        if (rewards.isEmpty()) {
+            log("    · ${blocks.size} 个蓝色块里没有 OCR 出 +10 的，为避免误点本次不点")
+            return null
+        }
+        val pick = rewards.random()
+        log("    · OCR 出 +10 的按钮 ${rewards.size} 个，随机挑中 [${pick.left},${pick.top}][${pick.right},${pick.bottom}]")
+        return Point(pick.centerX(), pick.centerY())
+    }
+
+    /** OCR 出来的按钮文字像不像「+10」（忽略空格；0/60 这类进度不算） */
+    private fun isRewardText(text: String): Boolean {
+        val s = text.replace(" ", "")
+        if (s.isEmpty() || s.contains("/")) return false
+        return s.contains("10")
+    }
+
+    /**
+     * 等奖励页真正加载出来再动手。刚进 Rewards 时页面上是「16,302 积分」「连续 53 day」
+     * 和签入 / 搜索 / 每日活动三块进度，此时并没有蓝色按钮，所以这里看的是首页文字，
+     * 不是蓝色按钮；也不写死等待秒数（机型、分辨率不同加载快慢差很多）。
+     */
+    private suspend fun waitPageReady(
+        context: Context,
+        log: CheckInLogger,
+        timeoutMs: Long = PAGE_READY_TIMEOUT_MS
+    ) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        var round = 0
+        var blankRounds = 0
+        while (System.currentTimeMillis() < deadline) {
+            val labels = Device.nodes(context)
+                ?.map { it.label }?.filter { it.isNotEmpty() } ?: emptyList()
+            val hit = labels.firstOrNull { l -> PAGE_READY_WORDS.any { l.contains(it, ignoreCase = true) } }
+            if (hit != null) {
+                log("✓ 奖励页已加载（看到「${hit.take(24)}」）")
+                return
+            }
+            // 一个文字都取不到，说明这台机器取不到页面文案，别再干等
+            blankRounds = if (labels.isEmpty()) blankRounds + 1 else 0
+            if (blankRounds >= 3) {
+                log("· 控件里读不到文字，不再等待，直接继续")
+                return
+            }
+            if (round % 2 == 0) log("  · 等待奖励页加载… (${round * PAGE_READY_POLL_MS / 1000}s)")
+            round++
+            delay(PAGE_READY_POLL_MS)
+        }
+        log("· 等了 ${timeoutMs / 1000}s 还没认出首页，按原流程继续")
+    }
+
+    /**
+     * 全屏截一次图，按 BTN_COLS x BTN_ROWS 网格取色，把"蓝点够多"的相邻格子合并成连通块，
+     * 只留下形状像横向胶囊的。
+     * @return (蓝色块列表, 全屏最蓝一格的蓝点数)；截图失败返回 null
+     */
+    private suspend fun detectBlueBlocks(
+        context: Context,
+        size: Point?,
+        log: CheckInLogger,
+        pngPath: String? = null
+    ): Pair<List<Rect>, Int>? {
+        val w = size?.x ?: 1080
+        val h = size?.y ?: 2400
+        val cw = w / BTN_COLS
+        val ch = h / BTN_ROWS
+        if (cw < 4 || ch < 4) return null
+
+        val cells = ArrayList<Rect>(BTN_COLS * BTN_ROWS)
+        for (j in 0 until BTN_ROWS) {
+            for (i in 0 until BTN_COLS) {
+                val l = i * cw
+                val t = j * ch
+                cells.add(
+                    Rect(
+                        l, t,
+                        if (i == BTN_COLS - 1) w else l + cw,
+                        if (j == BTN_ROWS - 1) h else t + ch
+                    )
+                )
+            }
+        }
+
+        val result = Device.analyze(context, cells, w, h, pngPath)
+        if (result == null) {
+            log("    · 截图取色失败")
+            return null
+        }
+        val blue = BooleanArray(cells.size) { i ->
+            (result.samples.getOrNull(i)?.blueHits ?: 0) >= BTN_CELL_BLUE_MIN
+        }
+        val blocks = clusterBlueCells(cells, blue).filter { isButtonLike(it, w, h) }
+        return blocks to (result.samples.maxOfOrNull { it.blueHits } ?: 0)
+    }
+
+    /** 把相邻的蓝色格子合并成矩形（4 邻接连通域） */
+    private fun clusterBlueCells(cells: List<Rect>, blue: BooleanArray): List<Rect> {
+        val visited = BooleanArray(cells.size)
+        val out = ArrayList<Rect>()
+        for (start in cells.indices) {
+            if (!blue[start] || visited[start]) continue
+            val queue = ArrayDeque<Int>()
+            queue.add(start)
+            visited[start] = true
+            var box = Rect(cells[start])
+            fun push(n: Int) {
+                if (blue[n] && !visited[n]) {
+                    visited[n] = true
+                    queue.add(n)
+                }
+            }
+            while (queue.isNotEmpty()) {
+                val idx = queue.removeFirst()
+                box.union(cells[idx])
+                val i = idx % BTN_COLS
+                val j = idx / BTN_COLS
+                if (i > 0) push(idx - 1)
+                if (i < BTN_COLS - 1) push(idx + 1)
+                if (j > 0) push(idx - BTN_COLS)
+                if (j < BTN_ROWS - 1) push(idx + BTN_COLS)
+            }
+            out.add(box)
+        }
+        return out
+    }
+
+    /** 蓝色块像不像奖励按钮：横向、不太大不太小，且不在状态栏/底部导航栏 */
+    private fun isButtonLike(r: Rect, screenW: Int, screenH: Int): Boolean {
+        val bw = r.width()
+        val bh = r.height()
+        if (bw <= 0 || bh <= 0) return false
+        if (bw < screenW * 0.06f) return false
+        if (bw > screenW * 0.6f) return false
+        if (bh > screenH * 0.08f) return false
+        if (bw < bh * 1.4f) return false
+        val cy = r.centerY()
+        if (cy < screenH * 0.04f) return false
+        if (cy > screenH * 0.90f) return false
+        return true
     }
 
     /** 完成后返回本应用 */

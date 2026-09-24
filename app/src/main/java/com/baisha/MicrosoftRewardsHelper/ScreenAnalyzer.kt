@@ -39,32 +39,40 @@ object ScreenAnalyzer {
      * @param rects  需要取色的区域（uiautomator 坐标系）
      * @param refW   uiautomator 坐标系宽（节点里出现的最大 X）
      * @param refH   uiautomator 坐标系高
+     * @param pngPath 已有的截图文件（应用外部缓存目录里的那张），非空时不再重新截屏、也不删除它
      */
-    fun analyze(rects: List<Rect>, refW: Int, refH: Int): Result? {
-        File(SCREEN_FILE).delete()
-        Runtime.getRuntime().exec(arrayOf("sh", "-c", "screencap -p $SCREEN_FILE"))
-            .let { p ->
-                try {
-                    p.waitFor()
-                } catch (_: Throwable) {
+    fun analyze(rects: List<Rect>, refW: Int, refH: Int, pngPath: String? = null): Result? {
+        val image = if (!pngPath.isNullOrBlank()) {
+            loadPng(pngPath)
+        } else {
+            File(SCREEN_FILE).delete()
+            Runtime.getRuntime().exec(arrayOf("sh", "-c", "screencap -p $SCREEN_FILE"))
+                .let { p ->
+                    try {
+                        p.waitFor()
+                    } catch (_: Throwable) {
+                    }
                 }
+            var file = File(SCREEN_FILE)
+            if (!file.exists()) {
+                Runtime.getRuntime().exec(arrayOf("sh", "-c", "screencap $SCREEN_FILE"))
+                    .let { p -> try { p.waitFor() } catch (_: Throwable) {} }
+                file = File(SCREEN_FILE)
             }
-        var file = File(SCREEN_FILE)
-        if (!file.exists()) {
-            Runtime.getRuntime().exec(arrayOf("sh", "-c", "screencap $SCREEN_FILE"))
-                .let { p -> try { p.waitFor() } catch (_: Throwable) {} }
-            file = File(SCREEN_FILE)
-        }
-        if (!file.exists()) return null
-        val image = try {
-            PngReader.decode(file.readBytes())
-        } catch (_: Throwable) {
-            null
+            if (!file.exists()) return null
+            val decoded = loadPng(file.absolutePath) ?: return null
+            file.delete()
+            decoded
         } ?: return null
-        file.delete()
 
         val samples = rects.map { rect -> sampleRect(image, rect, refW, refH) }
         return Result(image.width, image.height, samples)
+    }
+
+    fun loadPng(path: String): PngImage? = try {
+        PngReader.decode(File(path).readBytes())
+    } catch (_: Throwable) {
+        null
     }
 
     private fun sampleRect(image: PngImage, rect: Rect, refW: Int, refH: Int): Sample {

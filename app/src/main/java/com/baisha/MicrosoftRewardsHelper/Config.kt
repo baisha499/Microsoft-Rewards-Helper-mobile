@@ -238,21 +238,33 @@ object Config {
 
     // ---------- 缓存管理（只动 cache 目录，绝不碰 SharedPreferences 与 files） ----------
 
-    /** 应用当前缓存大小（内部缓存 + 外部缓存），字节 */
+    /** 应用当前缓存大小（内部 cache + code_cache + 外部 cache），字节 */
     fun cacheSize(context: Context): Long {
-        var total = dirSize(context.cacheDir)
-        context.externalCacheDirs.forEach { dir -> total += dirSize(dir) }
+        var total = dirSize(context.cacheDir) + dirSize(context.codeCacheDir)
+        context.externalCacheDirs?.forEach { dir -> total += dirSize(dir) }
         return total
     }
 
-    /** 清空缓存目录内容，保留目录本身；用户配置（SharedPreferences）不受影响 */
-    fun clearCache(context: Context) {
-        sequence {
-            yield(context.cacheDir)
-            context.externalCacheDirs.forEach { yield(it) }
-        }.filterNotNull().distinct().forEach { dir ->
-            dir.listFiles()?.forEach { it.deleteRecursively() }
+    /**
+     * 清空缓存目录内容（内部 cache + code_cache + 外部 cache），保留目录本身；
+     * 用户配置（SharedPreferences / files）不受影响。
+     * @return 实际清掉的字节数
+     */
+    fun clearCache(context: Context): Long {
+        val dirs = buildList<File?> {
+            add(context.cacheDir)
+            add(context.codeCacheDir)
+            context.externalCacheDirs?.let { addAll(it.toList()) }
         }
+        var cleared = 0L
+        dirs.filterNotNull().distinct().forEach { dir ->
+            val before = dirSize(dir)
+            if (before <= 0L) return@forEach
+            dir.listFiles()?.forEach { it.deleteRecursively() }
+            // 删不掉的（被占用/无权限）不计入清理量
+            cleared += before - dirSize(dir).coerceAtMost(before)
+        }
+        return cleared
     }
 
     private fun dirSize(dir: File?): Long {

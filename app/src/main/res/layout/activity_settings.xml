@@ -146,7 +146,7 @@
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="4dp"
-                        android:text="签到配置等用户数据保存在应用数据中，清理缓存不会删除。"
+                        android:text="签到配置等用户数据保存在应用数据中，清理缓存不会删除。OCR 生成的按钮截图也放在缓存里，会被一起清掉。"
                         android:textAppearance="?attr/textAppearanceBodySmall" />
 
                     <com.google.android.material.button.MaterialButton

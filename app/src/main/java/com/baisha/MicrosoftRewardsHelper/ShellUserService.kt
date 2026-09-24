@@ -65,9 +65,20 @@ class ShellUserService : Binder(), IInterface {
                 val refW = data.readInt()
                 val refH = data.readInt()
                 val timeoutMs = data.readInt()
-                val result = analyze(rectsRaw, refW, refH, timeoutMs)
+                val pngPath = data.readString()
+                val result = analyze(rectsRaw, refW, refH, timeoutMs, pngPath)
                 reply?.writeNoException()
                 reply?.writeString(result)
+                return true
+            }
+
+            UserShellProtocol.CAPTURE -> {
+                data.enforceInterface(UserShellProtocol.DESCRIPTOR)
+                val path = data.readString() ?: ""
+                val timeoutMs = data.readInt()
+                val ok = capture(path, timeoutMs)
+                reply?.writeNoException()
+                reply?.writeString(if (ok) path else "")
                 return true
             }
         }
@@ -155,12 +166,32 @@ class ShellUserService : Binder(), IInterface {
         ""
     }
 
-    /** screencap 后对给定区域取色，返回序列化结果 */
-    fun analyze(rectsRaw: String, refW: Int, refH: Int, timeoutMs: Int): String {
+    /** screencap 后对给定区域取色，返回序列化结果；pngPath 非空时直接复用已有的截图 */
+    fun analyze(
+        rectsRaw: String,
+        refW: Int,
+        refH: Int,
+        timeoutMs: Int,
+        pngPath: String? = null
+    ): String {
         val rects = RectSpec.parse(rectsRaw)
         if (rects.isEmpty()) return ""
-        val result = ScreenAnalyzer.analyze(rects, refW, refH) ?: return ""
+        val result = ScreenAnalyzer.analyze(rects, refW, refH, pngPath) ?: return ""
         return ScreenAnalyzer.serialize(result)
+    }
+
+    /**
+     * 截屏并保存到指定路径（应用传的是自己的 externalCacheDir，shell 能写、应用能读）。
+     * /data/local/tmp 应用读不到，所以必须写到应用的外部缓存目录。
+     */
+    fun capture(path: String, timeoutMs: Int): Boolean {
+        if (path.isBlank()) return false
+        val file = File(path)
+        runCatching { file.parentFile?.mkdirs() }
+        runCatching { file.delete() }
+        exec("screencap -p $path", timeoutMs)
+        if (!file.exists()) exec("screencap $path", timeoutMs)
+        return file.exists() && file.length() > 0
     }
 
     private fun exists(path: String): Boolean = try {
