@@ -70,6 +70,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tilSearchCount: TextInputLayout
     private lateinit var spSearchCount: MaterialAutoCompleteTextView
     private lateinit var btnCancel: MaterialButton
+    private lateinit var btnRelease: MaterialButton
     private lateinit var btnDetectForeground: MaterialButton
     private lateinit var btnScanNodes: MaterialButton
     private lateinit var btnDiagnose: MaterialButton
@@ -79,6 +80,7 @@ class MainActivity : AppCompatActivity() {
     private var running = false
     private var runJob: kotlinx.coroutines.Job? = null
     private var lastA11yConnected: Boolean? = null
+    private var lastReleased: Boolean? = null
     private val statusTicker = android.os.Handler(android.os.Looper.getMainLooper())
     private val tick: Runnable = object : Runnable {
         override fun run() {
@@ -101,6 +103,14 @@ class MainActivity : AppCompatActivity() {
 
         bindViews()
         bindActions()
+
+        // 上次若处于「已释放」，本次启动继续保持，直到用户再点一次按钮
+        val releasedOnBoot = Config.automationReleased(this)
+        UserShell.setReleasedFlag(releasedOnBoot)
+        if (releasedOnBoot) {
+            log("· 自动化当前处于「已释放」状态，点“恢复自动化”后才会重新绑定 Shizuku")
+            lifecycleScope.launch(Dispatchers.IO) { UserShell.release(this@MainActivity) }
+        }
 
         swMonitor.isChecked = Config.monitorEnabled(this)
         swOncePerDay.isChecked = Config.load(this).oncePerDay
@@ -161,6 +171,7 @@ class MainActivity : AppCompatActivity() {
         tilSearchCount = findViewById(R.id.tilSearchCount)
         spSearchCount = findViewById(R.id.spSearchCount)
         btnCancel = findViewById(R.id.btnCancel)
+        btnRelease = findViewById(R.id.btnRelease)
         btnDetectForeground = findViewById(R.id.btnDetectForeground)
         btnScanNodes = findViewById(R.id.btnScanNodes)
         btnDiagnose = findViewById(R.id.btnDiagnose)
@@ -191,6 +202,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<MaterialButton>(R.id.btnDiagnose).setOnClickListener { diagnoseDump() }
         findViewById<MaterialButton>(R.id.btnClearLog).setOnClickListener { tvLog.text = "" }
 
+        btnRelease.setOnClickListener { toggleRelease() }
         btnRun.setOnClickListener { runNow() }
         btnDailyActivities.setOnClickListener { runDailyActivities() }
         btnAutoSearch.setOnClickListener { runAutoSearch() }
@@ -253,17 +265,50 @@ class MainActivity : AppCompatActivity() {
             append("客户端：").append(if (installed) "已安装" else "未检测到").append('\n')
             append("服务：").append(if (binderAlive) "已连接（API $version）" else if (installed) "等待响应…（binder 未送达）" else "未运行").append('\n')
             append("授权：").append(if (granted) "已授权" else "未授权")
+            append('\n').append("自动化：").append(
+                if (UserShell.isReleased()) "已释放（不执行任何 shell）" else "就绪"
+            )
             if (!binderAlive && installed) {
                 append('\n').append("提示：Shizuku 只在冷启动时投递 binder，点下方“重新连接”")
             }
         }
         tvA11y.text = "无障碍取界面：${A11y.status(this)}"
+        refreshReleaseButton()
         refreshFunctionButtons()
     }
 
-    /** 无障碍未连接时禁用下方全部功能按钮，状态变化时记录日志 */
+    /**
+     * 释放 / 恢复自动化：解绑（或下次自动重新绑定）Shizuku 用户服务。
+     * 解绑是 Binder 调用，放到 IO 线程做，不占主线程、不阻塞 Shizuku 那边。
+     */
+    private fun toggleRelease() {
+        val next = !UserShell.isReleased()
+        Config.setAutomationReleased(this, next)
+        log(
+            if (next) "⇢ 已释放自动化：解绑 Shizuku 用户服务，期间不执行任何 shell"
+            else "⇢ 已恢复自动化：下次用到时重新绑定 Shizuku 用户服务"
+        )
+        lifecycleScope.launch {
+            withContext(Dispatchers.IO) { UserShell.setReleased(this@MainActivity, next) }
+            refreshShizukuStatus()
+        }
+    }
+
+    private fun refreshReleaseButton() {
+        btnRelease.text = if (UserShell.isReleased()) "恢复自动化（重新绑定 Shizuku）" else "释放自动化（解绑 Shizuku）"
+    }
+
+    /** 无障碍未连接、或自动化已释放时禁用下方全部功能按钮，状态变化时记录日志 */
     private fun refreshFunctionButtons() {
-        val a11yOk = A11y.connected()
+        val released = UserShell.isReleased()
+        if (lastReleased != null && lastReleased != released) {
+            log(
+                if (released) "✗ 自动化已释放，下方功能已禁用"
+                else "✓ 自动化已恢复，下方功能已解锁"
+            )
+        }
+        lastReleased = released
+        val a11yOk = A11y.connected() && !released
         if (lastA11yConnected != null && lastA11yConnected != a11yOk) {
             log(
                 if (a11yOk) "✓ 无障碍已连接，下方功能已解锁"
@@ -280,8 +325,9 @@ class MainActivity : AppCompatActivity() {
         btnDetectForeground.isEnabled = a11yOk
         btnScanNodes.isEnabled = a11yOk
         btnDiagnose.isEnabled = a11yOk
-        swMonitor.isEnabled = a11yOk
-        swOncePerDay.isEnabled = a11yOk
+        // 监听开关只受无障碍状态约束：释放期间监听仍在跑，但会自动跳过（见 MonitorService）
+        swMonitor.isEnabled = A11y.connected()
+        swOncePerDay.isEnabled = A11y.connected()
     }
 
     /** 通过 Shizuku 写入系统设置，直接启用本应用的无障碍服务 */

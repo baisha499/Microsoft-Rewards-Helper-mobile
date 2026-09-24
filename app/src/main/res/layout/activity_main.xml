@@ -104,6 +104,13 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="8dp"
                         android:text="打开系统无障碍设置" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnRelease"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="释放自动化（解绑 Shizuku）" />
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 

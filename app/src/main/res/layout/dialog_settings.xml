@@ -343,7 +343,33 @@
                 android:hint="@string/hint_poll">
 
                 <com.google.android.material.textfield.TextInputEditText
-                    android:id="@+id/etPoll"
+                        android:id="@+id/etPoll"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:inputType="number" />
+            </com.google.android.material.textfield.TextInputLayout>
+
+            <com.google.android.material.textfield.TextInputLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:hint="@string/hint_search_wait">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/etSearchWait"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="number" />
+            </com.google.android.material.textfield.TextInputLayout>
+
+            <com.google.android.material.textfield.TextInputLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:hint="@string/hint_daily_wait">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/etDailyWait"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:inputType="number" />

@@ -26,6 +26,10 @@ object UserShell {
     @Volatile
     private var signal: CountDownLatch? = null
 
+    /** 是否已「释放」：释放期间不绑定、不执行任何 shell */
+    @Volatile
+    private var released = false
+
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             instance = binder?.let { Proxy(it) }
@@ -37,8 +41,26 @@ object UserShell {
         }
     }
 
+    fun isReleased(): Boolean = released
+
+    /** 只改标记，不做 Binder 调用（可在主线程调用） */
+    fun setReleasedFlag(value: Boolean) {
+        released = value
+    }
+
+    /**
+     * 释放 / 恢复自动化：释放时立刻解绑 Shizuku 用户服务（shell 进程退出），
+     * 之后 get() 一律返回 null，所有 shell 调用自动跳过；恢复后下次用到时重新绑定。
+     * 建议在非主线程调用。
+     */
+    fun setReleased(context: Context, value: Boolean) {
+        released = value
+        if (value) release(context)
+    }
+
     /** 获取可用实例，必要时发起绑定并等待 */
     fun get(context: Context): Proxy? {
+        if (released) return null
         alive()?.let { return it }
         if (!Shell.hasPermission()) return null
         // ServiceConnection 的回调在主线程投递，所以这里绝不能在主线程阻塞等待，

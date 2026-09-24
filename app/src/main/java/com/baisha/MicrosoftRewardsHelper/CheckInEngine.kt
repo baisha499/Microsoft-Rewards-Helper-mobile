@@ -24,12 +24,17 @@ object CheckInEngine {
 
     private val DAY_EN = Regex("day\\s*([1-7])", RegexOption.IGNORE_CASE)
     private val DAY_ZH = Regex("第\\s*([1-7])\\s*天")
-    /** 奖励按钮上的文案，例如 "+10"、"+5" */
-    private val REWARD_BTN = Regex("\\+\\d+")
-    /** 每日活动区块标题 */
-    private val DAILY_SECTION_KEYWORDS = listOf("每日活动", "每日", "活动", "Daily", "daily", "Daily activity")
-    /** 今日积分区块关键词，用于定位"下方" */
-    private val POINTS_KEYWORDS = listOf("今日积分", "今日", "积分", "Points", "points")
+    /** 每日活动卡片上的奖励按钮文案，只认 "+10" */
+    private val REWARD_BTN = Regex("\\+\\s*10(?!\\d)")
+    /** 判定"蓝底白字"所需的蓝底采样点 / 白字采样点数量（采样共 5x5 个点） */
+    private const val BLUE_HITS_MIN = 2
+    private const val WHITE_HITS_MIN = 1
+    /** 取色时把节点矩形往外扩的像素数，保证采到按钮背景而不是只采到白字 */
+    private const val SAMPLE_PADDING = 4
+    /** 每日活动里全局返回后的界面稳定时间 */
+    private const val DAILY_BACK_SETTLE_MS = 1_800L
+    /** 每日活动的安全上限：正常靠"找不到 +10"结束，这里只是防止异常时死循环 */
+    private const val MAX_DAILY_CLICKS = 20
     /** 必应首页搜索框的提示文字 */
     private const val SEARCH_BOX_HINT = "探索国内新鲜事"
 
@@ -46,6 +51,10 @@ object CheckInEngine {
         log: CheckInLogger,
         maxStep: Int = 3
     ): Boolean {
+        if (UserShell.isReleased()) {
+            log("✗ 自动化已释放，请先在主界面点“恢复自动化”")
+            return false
+        }
         if (!Shell.hasPermission()) {
             log("✗ Shizuku 未授权，无法执行")
             return false
@@ -119,12 +128,16 @@ object CheckInEngine {
     /**
      * 完成每日活动：
      * 1) 进入目标 App → 点头像 → 点 Microsoft Rewards，到达奖励页
-     * 2) 在"今日积分"下方找到"每日活动"区块里的第一个活动
-     * 3) 依次点击其中的 +10 按钮（最多 3 个），每次点击后等 3 秒再返回
-     * 4) 找不到 +10 按钮则提示"每日活动已完成"
+     * 2) 先上划两下，等一会儿
+     * 3) 截图取色，在界面里找蓝底白字的 "+10" 按钮，随机点其中一个
+     * 4) 点击后等待 dailyWaitSec 秒，用全局手势返回，再找下一个，直到找不到为止
      * 5) 无论哪种情况，完成后均返回本应用
      */
     suspend fun runDailyActivities(context: Context, cfg: AppConfig, log: CheckInLogger): Boolean {
+        if (UserShell.isReleased()) {
+            log("✗ 自动化已释放，请先在主界面点“恢复自动化”")
+            return false
+        }
         if (!Shell.hasPermission()) {
             log("✗ Shizuku 未授权，无法执行")
             return false
@@ -183,8 +196,8 @@ object CheckInEngine {
         }
         delay(2_800)
 
-        // 第 3 步：在奖励页查找每日活动中的 +10 按钮并依次点击
-        val clicked = completeDailyTasks(context, size, log)
+        // 第 3 步：上划两下 → 找蓝底白字的 +10 → 依次点击
+        val clicked = completeDailyTasks(context, size, cfg.dailyWaitSec, log)
         if (clicked == 0) {
             log("✓ 未发现可点击的 +10 按钮，每日活动已完成")
         } else {
@@ -196,131 +209,110 @@ object CheckInEngine {
     }
 
     /**
-     * 在 Rewards 页面依次点击每日活动中的奖励按钮。
-     * 每点击一个后等待 3 秒再返回，然后重新扫描下一个。
+     * 在 Rewards 页面依次点击每日活动里的 +10 按钮：
+     * 先上划两下并等待，之后每轮都重新截图取色，找蓝底白字的 +10 按钮，
+     * 在找到的候选里随机点一个 → 等待 waitSec 秒 → 全局手势返回 → 继续下一轮，
+     * 直到界面上再也找不到 +10 为止。
      * @return 实际点击的按钮数量
      */
     private suspend fun completeDailyTasks(
         context: Context,
         size: Point?,
+        waitSec: Int,
         log: CheckInLogger
     ): Int {
-        // 先下滑一段，让"每日活动"区块的两个任务文字都显示出来再识别
-        scrollUntilDailyTasksVisible(context, size, log)
+        scrollUpTwice(context, size, log)
+        log("  · 等待 ${waitSec}s 后开始查找 +10 按钮")
+        delay(waitSec * 1_000L)
 
         var clicked = 0
-        val maxClicks = 3
+        var emptyRetry = 0
 
-        while (clicked < maxClicks) {
+        while (clicked < MAX_DAILY_CLICKS) {
             val nodes = Device.nodes(context)
             if (nodes == null) {
-                log("  · 未取到界面，重试中")
+                if (++emptyRetry >= 10) {
+                    log("  · 连续取不到界面，停止")
+                    break
+                }
+                log("  · 未取到界面，重试中 ($emptyRetry/10)")
                 delay(POLL_MS)
                 continue
             }
+            emptyRetry = 0
 
-            val button = findFirstRewardButton(nodes)
+            val button = findRewardButton(context, nodes, size, log)
             if (button == null) {
-                log("  · 当前没有可点击的 +10 按钮")
+                log("  · 当前没有蓝底白字的 +10，停止")
                 break
             }
 
             clicked++
-            log("→ 点击第 $clicked/$maxClicks 个奖励按钮「${button.label}」 (${button.centerX}, ${button.centerY})")
+            log("→ 点击第 $clicked 个 +10 按钮「${button.label}」 (${button.centerX}, ${button.centerY})")
             Device.tap(context, button.centerX, button.centerY)
 
-            log("  · 等待 3 秒")
-            delay(3_000)
+            log("  · 等待 ${waitSec}s")
+            delay(waitSec * 1_000L)
 
-            log("  · 返回奖励页")
+            log("  · 全局手势返回奖励页")
             Device.back(context)
-            delay(1_800)
+            delay(DAILY_BACK_SETTLE_MS)
         }
 
         return clicked
     }
 
-    /**
-     * 下滑页面，直到"每日活动"区块的两个任务文字都显示在屏幕上。
-     * 最多下滑 6 次，避免页面本身不够长时死循环。
-     */
-    private suspend fun scrollUntilDailyTasksVisible(
-        context: Context,
-        size: Point?,
-        log: CheckInLogger
-    ) {
-        val maxScrolls = 6
+    /** 上划（手指由下往上）两下，让每日活动区块露出来 */
+    private suspend fun scrollUpTwice(context: Context, size: Point?, log: CheckInLogger) {
         val w = size?.x ?: 1080
         val h = size?.y ?: 2400
-
-        repeat(maxScrolls) { i ->
-            val nodes = Device.nodes(context)
-            if (nodes != null && dailyTasksFullyVisible(nodes, h)) {
-                log("✓ 每日活动的 2 个任务文字都已显示在屏幕上${if (i > 0) "（下滑 $i 次）" else ""}")
-                return
-            }
-            log("⇢ 下滑一次，让每日活动的两个任务都显示出来…")
+        repeat(2) { i ->
+            log("⇢ 上划第 ${i + 1}/2 次")
             Device.swipe(context, w / 2, (h * 0.70f).toInt(), w / 2, (h * 0.40f).toInt(), 500)
-            delay(1_500)
+            delay(1_200)
         }
-        log("· 已下滑 $maxScrolls 次仍未确认两个任务完全可见，继续尝试识别")
     }
 
     /**
-     * 判断"每日活动"区块的 2 个任务文字是否都已可见：
-     * 找到"今日积分"下方的"每日活动"标题，统计标题下方的文字行数（按 Y 聚类），
-     * 至少 2 行即认为两个任务都显示出来了。
+     * 找蓝底白字的 +10 按钮（"+10" 三个字是白色的，衬在蓝色按钮背景上）：
+     * 先按文案筛出含 +10 的节点，再截图取色，只保留区域内"既有蓝底采样点、
+     * 又有白字采样点"的那些，然后在这些候选里随机挑一个。
+     * 截图取色失败时退化为在所有 +10 节点里随机挑一个。
      */
-    private fun dailyTasksFullyVisible(nodes: List<UiNode>, screenH: Int): Boolean {
-        val pointsNode = nodes.firstOrNull { node ->
-            POINTS_KEYWORDS.any { node.label.contains(it, ignoreCase = true) }
+    private suspend fun findRewardButton(
+        context: Context,
+        nodes: List<UiNode>,
+        size: Point?,
+        log: CheckInLogger
+    ): UiNode? {
+        val candidates = nodes.filter { REWARD_BTN.containsMatchIn(it.label) }
+            .sortedWith(compareBy<UiNode>({ it.centerY }, { it.centerX }))
+        if (candidates.isEmpty()) return null
+
+        val refW = size?.x ?: 1080
+        val refH = size?.y ?: 2400
+        // 外扩一点采样，避免节点矩形只包住白字时采不到背景色
+        val rects = candidates.map {
+            Rect(it.bounds).apply { inset(-SAMPLE_PADDING, -SAMPLE_PADDING) }
         }
-        val pointsBottom = pointsNode?.bounds?.bottom ?: 0
-        val sectionNode = nodes.firstOrNull { node ->
-            node.centerY > pointsBottom &&
-                DAILY_SECTION_KEYWORDS.any { node.label.contains(it, ignoreCase = true) }
-        } ?: return false
-        val sectionBottom = sectionNode.bounds.bottom
-
-        // 标题下方的文字节点按 Y 聚类成行，行距超过屏幕高度 3.5% 视为新一行的任务
-        val rowGap = (screenH * 0.035f).toInt().coerceAtLeast(60)
-        val texts = nodes.filter { it.centerY > sectionBottom && it.label.isNotBlank() }
-            .sortedBy { it.centerY }
-        if (texts.isEmpty()) return false
-
-        var rows = 0
-        var lastY = Int.MIN_VALUE
-        texts.forEach { node ->
-            if (lastY == Int.MIN_VALUE || node.centerY - lastY > rowGap) rows++
-            lastY = node.centerY
+        val result = Device.analyze(context, rects, refW, refH)
+        if (result == null) {
+            log("  · 截图取色失败，退化为在 ${candidates.size} 个 +10 节点里随机挑一个")
+            return candidates.randomOrNull()
         }
-        return rows >= 2
-    }
 
-    /**
-     * 查找"今日积分"下方"每日活动"区块中的第一个奖励按钮（+N 文案）。
-     * 按 Y 坐标从小到大排序，取最靠上的一个。
-     */
-    private fun findFirstRewardButton(nodes: List<UiNode>): UiNode? {
-        // 定位"今日积分"区块的底部 Y
-        val pointsNode = nodes.firstOrNull { node ->
-            POINTS_KEYWORDS.any { node.label.contains(it, ignoreCase = true) }
+        val hits = candidates.mapIndexedNotNull { i, node ->
+            val s = result.samples.getOrNull(i) ?: return@mapIndexedNotNull null
+            log("  · 候选「${node.label}」 rgb(${s.r},${s.g},${s.b}) 蓝底点=${s.blueHits} 白字点=${s.whiteHits}")
+            if (s.blueHits >= BLUE_HITS_MIN && s.whiteHits >= WHITE_HITS_MIN) node else null
         }
-        val pointsBottom = pointsNode?.bounds?.bottom ?: 0
 
-        // 定位"每日活动"区块标题的底部 Y（在今日积分下方）
-        val sectionNode = nodes.firstOrNull { node ->
-            node.centerY > pointsBottom &&
-                DAILY_SECTION_KEYWORDS.any { node.label.contains(it, ignoreCase = true) }
+        if (hits.isEmpty()) {
+            log("  · 有 ${candidates.size} 个 +10 节点，但没有一个是蓝底白字")
+            return null
         }
-        val sectionBottom = sectionNode?.bounds?.bottom ?: pointsBottom
-
-        // 筛选奖励按钮：文案含 +N 且在每日活动区块下方
-        val buttons = nodes.filter { node ->
-            REWARD_BTN.containsMatchIn(node.label) && node.centerY > sectionBottom
-        }.sortedBy { it.centerY }
-
-        return buttons.firstOrNull()
+        log("  · 蓝底白字 +10 按钮 ${hits.size} 个，随机挑一个")
+        return hits.random()
     }
 
     /** 完成后返回本应用 */
@@ -341,6 +333,10 @@ object CheckInEngine {
      * 5) 达到次数后返回本应用
      */
     suspend fun runAutoSearch(context: Context, cfg: AppConfig, count: Int, log: CheckInLogger): Boolean {
+        if (UserShell.isReleased()) {
+            log("✗ 自动化已释放，请先在主界面点“恢复自动化”")
+            return false
+        }
         if (!Shell.hasPermission()) {
             log("✗ Shizuku 未授权，无法执行")
             return false
@@ -407,8 +403,8 @@ object CheckInEngine {
                 Shell.exec(context, "input keyevent 66", 8_000)
             }
 
-            log("  · 等待 3 秒")
-            delay(3_000)
+            log("  · 等待 ${cfg.searchWaitSec}s")
+            delay(cfg.searchWaitSec * 1_000L)
 
             // 下一次：点击顶部搜索框（里面是刚搜的词）
             if (done < words.size && !tapSearchBoxWithText(context, word, log)) {

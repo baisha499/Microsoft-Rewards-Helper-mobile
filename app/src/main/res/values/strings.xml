@@ -15,6 +15,8 @@
     <string name="hint_checkin_xy">第3步备选坐标（一般不填）</string>
     <string name="hint_threshold">Day 卡片“已变黄”判定阈值（越大越严格）</string>
     <string name="hint_poll">轮询间隔（秒）</string>
+    <string name="hint_search_wait">每次搜索后的等待时间（秒）</string>
+    <string name="hint_daily_wait">每日活动点击 +10 后的等待时间（秒）</string>
 
     <string name="sec_target">目标应用</string>
     <string name="sec_permissions">权限</string>

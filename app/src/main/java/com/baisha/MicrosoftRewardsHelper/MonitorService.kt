@@ -52,6 +52,8 @@ class MonitorService : Service() {
     override fun onCreate() {
         super.onCreate()
         notificationManager = getSystemService(NotificationManager::class.java)
+        // 进程被重启后沿用持久化状态，避免莫名其妙又开始跑 shell
+        UserShell.setReleasedFlag(Config.automationReleased(this))
         createChannel()
         ServiceCompat.startForeground(
             this,
@@ -78,6 +80,11 @@ class MonitorService : Service() {
     private suspend fun loop() {
         while (true) {
             val cfg = Config.load(this@MonitorService)
+            if (UserShell.isReleased()) {
+                updateNotification(listOf("已释放自动化，跳过本次检测（在主界面点“恢复自动化”）"))
+                delay(cfg.pollSec * 1000L)
+                continue
+            }
             if (!Shell.hasPermission()) {
                 updateNotification(listOf("Shizuku 未授权，等待授权"))
                 delay(5_000)

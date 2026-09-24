@@ -22,6 +22,10 @@ data class AppConfig(
     val checkinStep: StepConfig,
     val dayThreshold: Int,
     val pollSec: Int,
+    /** 自动搜索：每次搜索后的等待时间（秒） */
+    val searchWaitSec: Int,
+    /** 每日活动：点击 +10 后的等待时间（秒） */
+    val dailyWaitSec: Int,
     val oncePerDay: Boolean
 ) {
     companion object {
@@ -35,6 +39,8 @@ data class AppConfig(
         const val DEFAULT_CHECKIN = "签入|签到|Check in|Check-in"
         const val DEFAULT_DAY_THRESHOLD = 22
         const val DEFAULT_POLL_SEC = 3
+        const val DEFAULT_SEARCH_WAIT_SEC = 5
+        const val DEFAULT_DAILY_WAIT_SEC = 5
     }
 }
 
@@ -50,6 +56,9 @@ object Config {
     private const val KEY_CHECKIN_XY = "checkin_xy"
     private const val KEY_DAY_THRESHOLD = "day_threshold"
     private const val KEY_POLL = "poll_sec"
+    private const val KEY_RELEASED = "automation_released"
+    private const val KEY_SEARCH_WAIT = "search_wait_sec"
+    private const val KEY_DAILY_WAIT = "daily_wait_sec"
     private const val KEY_ONCE = "once_per_day"
     private const val KEY_LAST_RUN = "last_run_date"
     private const val KEY_MONITOR = "monitor_enabled"
@@ -90,6 +99,8 @@ object Config {
             ),
             dayThreshold = p.getInt(KEY_DAY_THRESHOLD, AppConfig.DEFAULT_DAY_THRESHOLD).coerceIn(1, 200),
             pollSec = p.getInt(KEY_POLL, AppConfig.DEFAULT_POLL_SEC).coerceIn(1, 60),
+            searchWaitSec = p.getInt(KEY_SEARCH_WAIT, AppConfig.DEFAULT_SEARCH_WAIT_SEC).coerceIn(1, 120),
+            dailyWaitSec = p.getInt(KEY_DAILY_WAIT, AppConfig.DEFAULT_DAILY_WAIT_SEC).coerceIn(1, 120),
             oncePerDay = p.getBoolean(KEY_ONCE, true)
         )
     }
@@ -100,6 +111,13 @@ object Config {
         // 注意：这里必须是 Editor 的提交，写成 edit().apply { } 只会调用 Kotlin 的
         // 作用域函数 apply，改动不会落盘（历史 bug：设置点了保存却不生效）
         editor.commit()
+    }
+
+    /** 自动化是否处于「已释放」状态（跨进程重启保留） */
+    fun automationReleased(context: Context): Boolean = prefs(context).getBoolean(KEY_RELEASED, false)
+
+    fun setAutomationReleased(context: Context, released: Boolean) {
+        prefs(context).edit().putBoolean(KEY_RELEASED, released).apply()
     }
 
     fun monitorEnabled(context: Context): Boolean = prefs(context).getBoolean(KEY_MONITOR, false)

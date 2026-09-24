@@ -49,6 +49,8 @@ class StepConfigActivity : AppCompatActivity() {
     private lateinit var etCheckinXy: EditText
     private lateinit var etThreshold: EditText
     private lateinit var etPoll: EditText
+    private lateinit var etSearchWait: EditText
+    private lateinit var etDailyWait: EditText
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -67,6 +69,8 @@ class StepConfigActivity : AppCompatActivity() {
         etCheckinXy = content.findViewById(R.id.etCheckinXy)
         etThreshold = content.findViewById(R.id.etThreshold)
         etPoll = content.findViewById(R.id.etPoll)
+        etSearchWait = content.findViewById(R.id.etSearchWait)
+        etDailyWait = content.findViewById(R.id.etDailyWait)
 
         val cfg = Config.load(this)
         etPackages.setText(cfg.packages.joinToString("\n"))
@@ -77,6 +81,8 @@ class StepConfigActivity : AppCompatActivity() {
         etCheckinXy.setText(cfg.checkinStep.fallbackRaw ?: "")
         etThreshold.setText(cfg.dayThreshold.toString())
         etPoll.setText(cfg.pollSec.toString())
+        etSearchWait.setText(cfg.searchWaitSec.toString())
+        etDailyWait.setText(cfg.dailyWaitSec.toString())
 
         setupToggle(R.id.toggleTarget, R.id.bodyTarget)
         setupToggle(R.id.toggleStep1, R.id.bodyStep1)
@@ -173,6 +179,16 @@ class StepConfigActivity : AppCompatActivity() {
                 "poll_sec",
                 etPoll.text.toString().trim().toIntOrNull()?.coerceIn(1, 60)
                     ?: AppConfig.DEFAULT_POLL_SEC
+            )
+            putInt(
+                "search_wait_sec",
+                etSearchWait.text.toString().trim().toIntOrNull()?.coerceIn(1, 120)
+                    ?: AppConfig.DEFAULT_SEARCH_WAIT_SEC
+            )
+            putInt(
+                "daily_wait_sec",
+                etDailyWait.text.toString().trim().toIntOrNull()?.coerceIn(1, 120)
+                    ?: AppConfig.DEFAULT_DAILY_WAIT_SEC
             )
         }
         if (finishAfter) {
